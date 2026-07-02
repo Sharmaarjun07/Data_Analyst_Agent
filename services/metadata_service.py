@@ -195,16 +195,118 @@ def extract_metadata(df: pd.DataFrame, filename: str = "dataset.csv") -> dict:
         col_meta["recommendation"] = _column_recommendation(col_meta)
         columns_meta.append(col_meta)
 
-    # ── Quality score (0–100) ────────────────────────────────
-    # Penalise: missing data, duplicates, high-cardinality text
-    missing_penalty   = min(missing_pct * 1.5, 40)
-    duplicate_penalty = min(dup_count / max(n_rows, 1) * 100 * 0.5, 20)
-    quality_score     = max(0, round(100 - missing_penalty - duplicate_penalty, 1))
-    if   quality_score >= 90: grade = "A"
-    elif quality_score >= 75: grade = "B"
-    elif quality_score >= 60: grade = "C"
-    elif quality_score >= 40: grade = "D"
-    else:                     grade = "F"
+    
+    # ==========================================================
+    # QUALITY SCORE
+    # ==========================================================
+
+    # Missing value penalty
+    missing_penalty = min(missing_pct * 1.5, 40)
+
+    # Duplicate penalty
+    duplicate_penalty = min(
+        dup_count / max(n_rows, 1) * 100 * 0.5,
+        20
+    )
+
+    # -----------------------------
+    # Outlier penalty
+    # -----------------------------
+
+    numeric_columns = 0
+    affected_columns = 0
+    severity = 0
+
+    for cm in columns_meta:
+
+        if cm["dtype_category"] != "numeric":
+            continue
+
+        numeric_columns += 1
+
+        outliers = cm.get("outliers", 0)
+
+        if outliers > 0:
+
+            affected_columns += 1
+
+            severity += outliers / n_rows
+
+
+    if numeric_columns > 0:
+
+        affected_ratio = affected_columns / numeric_columns
+
+        average_severity = severity / affected_columns if affected_columns else 0
+
+    else:
+
+        affected_ratio = 0
+        average_severity = 0
+
+
+    outlier_penalty = min(
+
+        affected_ratio * 10 +
+        average_severity * 10,
+
+        20
+
+    )
+
+    # -----------------------------
+    # Datatype penalty
+    # -----------------------------
+
+    datatype_penalty = 0
+
+    for cm in columns_meta:
+
+        if cm["dtype"] == "object" and cm["dtype_category"] == "text":
+            datatype_penalty += 2
+
+    datatype_penalty = min(datatype_penalty, 10)
+
+    # -----------------------------
+    # Constant column penalty
+    # -----------------------------
+
+    constant_columns = 0
+
+    for cm in columns_meta:
+
+        if cm["n_unique"] <= 1:
+            constant_columns += 1
+
+    constant_penalty = min(constant_columns * 2, 10)
+
+    # -----------------------------
+    # Final score
+    # -----------------------------
+
+    quality_score = max(
+        0,
+        round(
+            100
+            - missing_penalty
+            - duplicate_penalty
+            - outlier_penalty
+            - datatype_penalty
+            - constant_penalty,
+            1,
+        ),
+    )
+
+    if quality_score >= 90:
+        grade = "A"
+    elif quality_score >= 75:
+        grade = "B"
+    elif quality_score >= 60:
+        grade = "C"
+    elif quality_score >= 40:
+        grade = "D"
+    else:
+        grade = "F"
 
     # ── Breakdowns by dtype category ─────────────────────────
     dtype_counts = {}
@@ -234,9 +336,20 @@ def extract_metadata(df: pd.DataFrame, filename: str = "dataset.csv") -> dict:
             "extracted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         },
         "quality": {
-            "score":    quality_score,
-            "grade":    grade,
-            "issues": {
+            "score": quality_score,
+            "grade": grade,
+
+        "penalties": {
+
+            "missing": round(missing_penalty,2),
+            "duplicates": round(duplicate_penalty,2),
+            "outliers": round(outlier_penalty,2),
+            "datatype": round(datatype_penalty,2),
+            "constant": round(constant_penalty,2),
+
+        },
+
+        "issues": {
                 "missing_cells":   missing_cells,
                 "duplicate_rows":  dup_count,
                 "high_missing_cols": [
@@ -246,6 +359,16 @@ def extract_metadata(df: pd.DataFrame, filename: str = "dataset.csv") -> dict:
                     cm["name"] for cm in columns_meta
                     if cm["n_unique"] == n_rows and cm["dtype_category"] == "categorical"
                 ],
+                "outlier_columns": sum(
+                    1
+                    for cm in columns_meta
+                    if cm.get("outliers",0) > 0
+                ),
+
+                "total_outliers": sum(
+                    cm.get("outliers",0)
+                    for cm in columns_meta
+                ),
             },
         },
         "columns":           columns_meta,

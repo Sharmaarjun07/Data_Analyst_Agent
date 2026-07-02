@@ -5,6 +5,7 @@ Phases completed:
   ✅ Phase 2 — File Upload / Dashboard page
   ✅ Phase 3 — Metadata Engine + Dataset page
   ✅ Phase 4 — Data Cleaning Engine + Cleaning page
+  ✅ Phase 5 — EDA Engine + EDA page
 
 Run:
   streamlit run frontend/uploads/upload.py
@@ -45,6 +46,14 @@ except ImportError:
                            "rows_removed": 0, "cols_before": df.shape[1],
                            "cols_after": df.shape[1], "total_actions": 0,
                            "applied_at": ""}
+
+try:
+    from services.eda_service import run_eda
+except ImportError:
+    def run_eda(df, metadata):
+        return {"computed_at": "", "numeric_stats": {}, "correlation": {},
+                "distributions": {}, "categorical_eda": {}, "time_series": {},
+                "summary_insights": []}
 
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Data Analyst Agent", page_icon="🤖",
@@ -191,6 +200,7 @@ _defaults = {
     "metadata":      None,   # from Phase 3
     "cleaning_issues": None, # from Phase 4 analyze_issues
     "cleaning_report": None, # from Phase 4 apply_cleaning
+    "eda_result":    None,   # from Phase 5 run_eda
     "active_page":   "Dashboard",
 }
 for k, v in _defaults.items():
@@ -453,12 +463,38 @@ elif page == "Dataset":
         st.progress(int(ql["score"]) / 100)
         issues_q = ql.get("issues", {})
         items = []
-        if issues_q.get("missing_cells", 0):
-            items.append(f"⚠️ {fmt_num(issues_q['missing_cells'])} missing cells")
-        if issues_q.get("duplicate_rows", 0):
-            items.append(f"⚠️ {issues_q['duplicate_rows']} duplicate rows")
+
+        if issues_q.get("missing_cells",0):
+            items.append(
+                f"⚠️ {fmt_num(issues_q['missing_cells'])} missing cells"
+            )
+
+        if issues_q.get("duplicate_rows",0):
+            items.append(
+                f"⚠️ {issues_q['duplicate_rows']} duplicate rows"
+            )
+
         if issues_q.get("high_missing_cols"):
-            items.append(f"⚠️ {len(issues_q['high_missing_cols'])} col(s) >30% missing")
+            items.append(
+                f"⚠️ {len(issues_q['high_missing_cols'])} columns >30% missing"
+            )
+
+        outlier_columns = sum(
+            1
+            for c in cols
+            if c.get("outliers",0) > 0
+        )
+
+        total_outliers = sum(
+            c.get("outliers",0)
+            for c in cols
+        )
+
+        if outlier_columns:
+            items.append(
+                f"⚠️ {outlier_columns} numeric columns contain {fmt_num(total_outliers)} outliers"
+            )
+
         if not items:
             items.append("✅ No major issues found")
         for it in items:
@@ -900,12 +936,564 @@ elif page == "Cleaning":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PLACEHOLDER PAGES  (Phases 5–11)
+#  EDA PAGE  (Phase 5)
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "EDA":
+    import plotly.graph_objects as go
+    import plotly.express as px
+    from plotly.subplots import make_subplots
+
+    # Use cleaned_df if available, else original
+    df_eda   = st.session_state.cleaned_df if st.session_state.cleaned_df is not None else st.session_state.df
+    meta     = st.session_state.metadata
+    ov       = meta["overview"]
+    filename = ov["filename"]
+
+    st.markdown(f"""
+    <div class="hero">
+        <div class="hero-t">Exploratory Data <span>Analysis</span></div>
+        <div class="hero-s">Statistical deep-dive on <strong>{filename}</strong>
+        {"· using cleaned dataset ✅" if st.session_state.cleaned_df is not None else "· tip: run Cleaning first for best results"}</div>
+    </div>""", unsafe_allow_html=True)
+
+    # Run EDA (cached in session state)
+    if st.session_state.eda_result is None:
+        with st.spinner("Running EDA engine…"):
+            st.session_state.eda_result = run_eda(df_eda, meta)
+
+    eda = st.session_state.eda_result
+
+    # Re-run button
+    if st.button("🔄  Re-run EDA", key="_rerun_eda"):
+        st.session_state.eda_result = None
+        st.rerun()
+
+    num_stats   = eda.get("numeric_stats", {})
+    corr        = eda.get("correlation", {})
+    dists       = eda.get("distributions", {})
+    cat_eda     = eda.get("categorical_eda", {})
+    ts_eda      = eda.get("time_series", {})
+    insights    = eda.get("summary_insights", [])
+    num_cols    = list(num_stats.keys())
+    corr_cols   = corr.get("columns", [])
+
+    PLOTLY_LAYOUT = dict(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, sans-serif", color="#8B949E", size=12),
+        margin=dict(l=10, r=10, t=36, b=10),
+        xaxis=dict(gridcolor="#30363D", linecolor="#30363D", zerolinecolor="#30363D"),
+        yaxis=dict(gridcolor="#30363D", linecolor="#30363D", zerolinecolor="#30363D"),
+    )
+
+    # ── Summary insights ──────────────────────────────────────
+    if insights:
+        st.markdown('<div style="font-size:15px;font-weight:600;margin:8px 0 12px;">💡 Auto-detected Insights</div>',
+                    unsafe_allow_html=True)
+        cols_i = st.columns(min(len(insights), 2))
+        for idx, ins in enumerate(insights):
+            with cols_i[idx % 2]:
+                st.markdown(f"""
+                <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+                            padding:12px 16px;margin-bottom:10px;font-size:13px;color:var(--muted);
+                            line-height:1.5;">{ins}</div>""", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── TABS ──────────────────────────────────────────────────
+    tab_labels = ["📐 Statistics", "🔗 Correlation", "📊 Distributions",
+                  "🏷️ Categories", "🔵 Scatter Plots"]
+    if ts_eda:
+        tab_labels.append("📅 Time Series")
+    tabs = st.tabs(tab_labels)
+
+    # ════════════════════════════════
+    #  TAB 1 — STATISTICS
+    # ════════════════════════════════
+    with tabs[0]:
+        if not num_stats:
+            st.markdown('<div style="color:var(--muted);padding:20px;">No numeric columns found.</div>',
+                        unsafe_allow_html=True)
+        else:
+            # Stats summary table
+            stat_keys = ["count","mean","median","std","min","q1","q3","max","skewness","kurtosis"]
+            stat_lbls = ["Count","Mean","Median","Std Dev","Min","Q1","Q3","Max","Skewness","Kurtosis"]
+
+            header_cells = "".join(f"<th>{l}</th>" for l in ["Column"] + stat_lbls)
+            body_rows = ""
+            for col, st_d in num_stats.items():
+                skew  = st_d.get("skewness")
+                skc   = "var(--yellow)" if skew and abs(skew) > 1 else "var(--muted)"
+                cells = f'<td class="mono" style="font-weight:600;color:var(--fg);">{col}</td>'
+                for k in stat_keys:
+                    v = st_d.get(k)
+                    color = skc if k == "skewness" and skew and abs(skew) > 1 else "var(--muted)"
+                    disp  = f"{v:,.4f}" if isinstance(v, float) else (str(v) if v is not None else "—")
+                    cells += f'<td style="color:{color};" class="mono">{disp}</td>'
+                body_rows += f"<tr>{cells}</tr>"
+
+            st.markdown(f"""
+            <div class="card" style="overflow:auto;margin-bottom:20px;">
+              <table class="col-table">
+                <thead><tr>{header_cells}</tr></thead>
+                <tbody>{body_rows}</tbody>
+              </table>
+            </div>""", unsafe_allow_html=True)
+
+            # Skewness / Kurtosis chart
+            st.markdown('<div style="font-size:14px;font-weight:600;margin:20px 0 12px;">Distribution Shape per Column</div>',
+                        unsafe_allow_html=True)
+            c_left, c_right = st.columns(2)
+            with c_left:
+                skew_vals = [num_stats[c].get("skewness", 0) or 0 for c in num_cols]
+                colors    = ["#F85149" if abs(v) > 1 else "#D29922" if abs(v) > 0.5 else "#3FB950"
+                             for v in skew_vals]
+                fig = go.Figure(go.Bar(
+                    x=num_cols, y=skew_vals,
+                    marker_color=colors,
+                    text=[f"{v:.2f}" for v in skew_vals],
+                    textposition="outside",
+                ))
+                fig.add_hline(y=0, line_color="#484F58", line_dash="dash")
+                fig.update_layout(**PLOTLY_LAYOUT, title="Skewness by Column", height=320)
+                st.plotly_chart(fig, use_container_width=True)
+
+            with c_right:
+                kurt_vals = [num_stats[c].get("kurtosis", 0) or 0 for c in num_cols]
+                fig2 = go.Figure(go.Bar(
+                    x=num_cols, y=kurt_vals,
+                    marker_color="#2F81F7",
+                    text=[f"{v:.2f}" for v in kurt_vals],
+                    textposition="outside",
+                ))
+                fig2.add_hline(y=0, line_color="#484F58", line_dash="dash")
+                fig2.update_layout(**PLOTLY_LAYOUT, title="Kurtosis by Column", height=320)
+                st.plotly_chart(fig2, use_container_width=True)
+
+    # ════════════════════════════════
+    #  TAB 2 — CORRELATION
+    # ════════════════════════════════
+    with tabs[1]:
+        if len(corr_cols) < 2:
+            st.markdown('<div style="color:var(--muted);padding:20px;">Need at least 2 numeric columns for correlation.</div>',
+                        unsafe_allow_html=True)
+        else:
+            corr_type = st.radio("Correlation method", ["Pearson", "Spearman"],
+                                 horizontal=True, label_visibility="collapsed")
+            matrix = corr["pearson"] if corr_type == "Pearson" else corr["spearman"]
+
+            # Heatmap
+            fig_h = go.Figure(go.Heatmap(
+                z=matrix,
+                x=corr_cols,
+                y=corr_cols,
+                colorscale=[
+                    [0.0, "#F85149"], [0.5, "#161B22"], [1.0, "#2F81F7"]
+                ],
+                zmin=-1, zmax=1,
+                text=[[f"{v:.2f}" if v is not None else "" for v in row] for row in matrix],
+                texttemplate="%{text}",
+                textfont={"size": 10},
+                hoverongaps=False,
+            ))
+            fig_h.update_layout(
+                **PLOTLY_LAYOUT,
+                title=f"{corr_type} Correlation Heatmap",
+                height=max(350, len(corr_cols) * 45),
+            )
+            st.plotly_chart(fig_h, use_container_width=True)
+
+            # Top correlated pairs table
+            top_pairs = corr.get("top_pairs", [])
+            if top_pairs:
+                st.markdown('<div style="font-size:14px;font-weight:600;margin:20px 0 12px;">Top Correlated Pairs</div>',
+                            unsafe_allow_html=True)
+                pair_rows = ""
+                for p in top_pairs[:8]:
+                    v    = p["pearson"]
+                    bar_w = int(abs(v) * 100)
+                    bar_c = "#2F81F7" if v > 0 else "#F85149"
+                    str_c = "#3FB950" if p["strength"] == "strong" else \
+                            "#D29922" if p["strength"] == "moderate" else "#8B949E"
+                    pair_rows += f"""<tr>
+                      <td class="mono" style="color:var(--fg);">{p['col_a']}</td>
+                      <td class="mono" style="color:var(--fg);">{p['col_b']}</td>
+                      <td><div style="background:{bar_c};width:{bar_w}%;height:6px;border-radius:3px;"></div></td>
+                      <td class="mono" style="color:{bar_c};font-weight:600;">{v:+.4f}</td>
+                      <td style="color:{str_c};font-size:12px;">{p['strength']}</td>
+                      <td style="color:var(--muted);font-size:12px;">{p['direction']}</td>
+                    </tr>"""
+                st.markdown(f"""
+                <div class="card" style="overflow:auto;">
+                  <table class="col-table">
+                    <thead><tr><th>Column A</th><th>Column B</th><th>Strength</th>
+                    <th>r value</th><th>Category</th><th>Direction</th></tr></thead>
+                    <tbody>{pair_rows}</tbody>
+                  </table>
+                </div>""", unsafe_allow_html=True)
+
+    # ════════════════════════════════
+    #  TAB 3 — DISTRIBUTIONS
+    # ════════════════════════════════
+    with tabs[2]:
+        if not dists:
+            st.markdown('<div style="color:var(--muted);padding:20px;">No numeric distributions to show.</div>',
+                        unsafe_allow_html=True)
+        else:
+            selected_col = st.selectbox(
+                "Select column",
+                options=list(dists.keys()),
+                label_visibility="collapsed",
+                key="_dist_col",
+            )
+            dist_data = dists[selected_col]
+            st_d      = num_stats.get(selected_col, {})
+
+            c1, c2, c3, c4 = st.columns(4)
+            for wid, lbl, key, color in [
+                (c1, "Mean",   "mean",   "#2F81F7"),
+                (c2, "Median", "median", "#3FB950"),
+                (c3, "Std Dev","std",    "#D29922"),
+                (c4, "Skew",   "skewness","#F85149" if abs(stv := (st_d.get("skewness") or 0)) > 1 else "#8B949E"),
+            ]:
+                v = st_d.get(key)
+                with wid:
+                    st.markdown(f"""
+                    <div class="kpi-card" style="margin-bottom:16px;">
+                        <div class="kpi-lbl">{lbl}</div>
+                        <div class="kpi-val" style="color:{color};font-size:20px;">
+                            {f"{v:,.4f}" if v is not None else "—"}</div>
+                    </div>""", unsafe_allow_html=True)
+
+            # Histogram
+            fig_dist = go.Figure()
+            fig_dist.add_trace(go.Bar(
+                x=dist_data["bin_centers"],
+                y=dist_data["counts"],
+                name="Frequency",
+                marker_color="#2F81F7",
+                marker_line_width=0,
+                opacity=0.85,
+            ))
+            if st_d.get("mean") is not None:
+                fig_dist.add_vline(x=st_d["mean"],   line_color="#3FB950", line_dash="dash",
+                                   annotation_text="mean",   annotation_position="top right")
+            if st_d.get("median") is not None:
+                fig_dist.add_vline(x=st_d["median"], line_color="#D29922", line_dash="dot",
+                                   annotation_text="median", annotation_position="top left")
+            fig_dist.update_layout(**PLOTLY_LAYOUT, title=f"Distribution of '{selected_col}'",
+                                   height=360, bargap=0.02)
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+            # Box plot
+            fig_box = go.Figure(go.Box(
+                y=df_eda[selected_col].dropna(),
+                name=selected_col,
+                marker_color="#2F81F7",
+                line_color="#2F81F7",
+                boxmean="sd",
+                fillcolor="rgba(47,129,247,0.15)",
+            ))
+            fig_box.update_layout(**PLOTLY_LAYOUT, title=f"Box Plot — '{selected_col}'", height=300)
+            st.plotly_chart(fig_box, use_container_width=True)
+
+            # Skewness explanation
+            skew_v = st_d.get("skewness")
+            kurt_v = st_d.get("kurtosis")
+            if skew_v is not None:
+                skl = st_d.get("skew_label", "")
+                krl = st_d.get("kurt_label", "")
+                st.markdown(f"""
+                <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+                            padding:14px 18px;font-size:13px;color:var(--muted);margin-top:8px;">
+                    <strong style="color:var(--fg);">Shape summary:</strong>
+                    Distribution is <strong>{skl}</strong> (skew={skew_v:.2f})
+                    and <strong>{krl}</strong> (kurt={kurt_v:.2f}).
+                    {"Consider log-transform before modeling." if abs(skew_v) > 1 else "Shape is suitable for most models."}
+                </div>""", unsafe_allow_html=True)
+
+    # ════════════════════════════════
+    #  TAB 4 — CATEGORIES
+    # ════════════════════════════════
+    with tabs[3]:
+        if not cat_eda:
+            st.markdown('<div style="color:var(--muted);padding:20px;">No categorical columns found.</div>',
+                        unsafe_allow_html=True)
+        else:
+            cat_col = st.selectbox(
+                "Select categorical column",
+                options=list(cat_eda.keys()),
+                label_visibility="collapsed",
+                key="_cat_col",
+            )
+            ced    = cat_eda[cat_col]
+            vc     = ced["value_counts"]
+            labels = [v["label"] for v in vc]
+            counts = [v["count"]  for v in vc]
+            pcts   = [v["pct"]    for v in vc]
+
+            st.markdown(f"""
+            <div class="kpi-row" style="margin-bottom:16px;">
+                <div class="kpi-card">
+                    <div class="kpi-lbl">Unique Values</div>
+                    <div class="kpi-val" style="color:var(--accent);">{ced['n_unique']}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-lbl">Most Frequent</div>
+                    <div class="kpi-val" style="font-size:16px;color:var(--green);">{labels[0] if labels else "—"}</div>
+                    <div class="kpi-sub">{pcts[0] if pcts else 0}% of rows</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-lbl">Top-5 Coverage</div>
+                    <div class="kpi-val" style="color:var(--yellow);">{round(sum(pcts[:5]),1)}%</div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+            ca, cb = st.columns([3, 2])
+            with ca:
+                fig_bar = go.Figure(go.Bar(
+                    x=counts, y=labels,
+                    orientation="h",
+                    marker_color="#2F81F7",
+                    text=[f"{p}%" for p in pcts],
+                    textposition="outside",
+                ))
+                fig_bar.update_layout(
+                    **PLOTLY_LAYOUT,
+                    title=f"Value Counts — '{cat_col}'",
+                    height=max(300, len(labels) * 32),
+                )
+                fig_bar.update_yaxes(autorange="reversed",
+                                     gridcolor="#30363D",
+                                     linecolor="#30363D",
+                                     zerolinecolor="#30363D")
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            with cb:
+                if len(labels) <= 10:
+                    fig_pie = go.Figure(go.Pie(
+                        labels=labels, values=counts,
+                        hole=0.45,
+                        marker=dict(colors=px.colors.qualitative.Set2),
+                        textinfo="label+percent",
+                        textfont_size=11,
+                    ))
+                    fig_pie.update_layout(
+                        **PLOTLY_LAYOUT,
+                        title=f"Share — '{cat_col}'",
+                        height=max(300, len(labels) * 32),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.markdown(f"""
+                    <div style="color:var(--muted);font-size:13px;padding:40px 0;text-align:center;">
+                        Pie chart hidden — {ced['n_unique']} categories is too many.<br>
+                        Showing top 15 in bar chart.
+                    </div>""", unsafe_allow_html=True)
+
+    # ════════════════════════════════
+    #  TAB 5 — SCATTER PLOTS
+    # ════════════════════════════════
+    with tabs[4]:
+        top_pairs = corr.get("top_pairs", [])
+        strong_pairs = [p for p in top_pairs if abs(p["pearson"]) > 0.3]
+
+        if not strong_pairs:
+            st.markdown(
+                '<div style="color:var(--muted);padding:20px;">'
+                'No meaningful correlations found (r > 0.3) to plot scatter charts.</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="font-size:13px;color:var(--muted);margin-bottom:16px;">'
+                'Showing scatter plots for the top correlated column pairs. '
+                'Each point is one row in your dataset.</div>',
+                unsafe_allow_html=True,
+            )
+
+            # Pair selector
+            pair_options = [
+                f"{p['col_a']}  ↔  {p['col_b']}  (r={p['pearson']:+.3f})"
+                for p in strong_pairs[:10]
+            ]
+            chosen_label = st.selectbox(
+                "Select column pair",
+                options=pair_options,
+                label_visibility="collapsed",
+                key="_scatter_pair",
+            )
+            chosen_idx  = pair_options.index(chosen_label)
+            chosen_pair = strong_pairs[chosen_idx]
+            col_a, col_b = chosen_pair["col_a"], chosen_pair["col_b"]
+
+            # Optional colour-by categorical column
+            colour_options = ["— none —"] + [
+                c for c in df_eda.columns
+                if c not in (col_a, col_b)
+                and str(df_eda[c].dtype) == "object"
+                and df_eda[c].nunique() <= 15
+            ]
+            colour_col = st.selectbox(
+                "Colour by (optional)",
+                options=colour_options,
+                label_visibility="collapsed",
+                key="_scatter_colour",
+            )
+
+            # Sample up to 5000 rows so the chart stays fast
+            plot_df = df_eda[[col_a, col_b] + (
+                [colour_col] if colour_col != "— none —" else []
+            )].dropna().sample(min(5000, len(df_eda)), random_state=42)
+
+            color_arg = colour_col if colour_col != "— none —" else None
+
+            # Build scatter figure
+            fig_sc = go.Figure()
+            if color_arg:
+                for grp_val, grp_df in plot_df.groupby(color_arg):
+                    fig_sc.add_trace(go.Scatter(
+                        x=grp_df[col_a], y=grp_df[col_b],
+                        mode="markers",
+                        name=str(grp_val),
+                        marker=dict(size=5, opacity=0.65),
+                    ))
+            else:
+                fig_sc.add_trace(go.Scatter(
+                    x=plot_df[col_a], y=plot_df[col_b],
+                    mode="markers",
+                    marker=dict(size=5, color="#2F81F7", opacity=0.55),
+                    name="data",
+                ))
+
+            # Trend line (OLS) using numpy
+            try:
+                valid = plot_df[[col_a, col_b]].dropna()
+                m, b  = np.polyfit(valid[col_a], valid[col_b], 1)
+                x_min, x_max = float(valid[col_a].min()), float(valid[col_a].max())
+                fig_sc.add_trace(go.Scatter(
+                    x=[x_min, x_max],
+                    y=[m * x_min + b, m * x_max + b],
+                    mode="lines",
+                    name=f"Trend (y={m:.3f}x+{b:.3f})",
+                    line=dict(color="#F85149", width=2, dash="dash"),
+                ))
+            except Exception:
+                pass
+
+            r_val   = chosen_pair["pearson"]
+            r_color = "#3FB950" if abs(r_val) > 0.7 else "#D29922" if abs(r_val) > 0.4 else "#8B949E"
+
+            fig_sc.update_layout(
+                **PLOTLY_LAYOUT,
+                title=f"Scatter: {col_a} vs {col_b}",
+                height=430,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            )
+            fig_sc.update_xaxes(title_text=col_a)
+            fig_sc.update_yaxes(title_text=col_b)
+            st.plotly_chart(fig_sc, use_container_width=True)
+
+            # Interpretation card
+            direction  = chosen_pair["direction"]
+            strength   = chosen_pair["strength"]
+            st.markdown(f"""
+            <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+                        padding:14px 18px;font-size:13px;color:var(--muted);margin-top:4px;
+                        display:flex;align-items:center;gap:16px;">
+                <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;
+                            color:{r_color};">{r_val:+.3f}</div>
+                <div>
+                    <div style="color:var(--fg);font-weight:600;">
+                        {strength.capitalize()} {direction} correlation (Pearson r)
+                    </div>
+                    <div style="margin-top:4px;">
+                        {"As " + col_a + " increases, " + col_b +
+                         (" tends to increase as well." if direction == "positive"
+                          else " tends to decrease.")}
+                        {"This is a strong signal — consider using one as a feature to predict the other."
+                          if strength == "strong" else
+                         "Moderate relationship — useful feature but not dominant."
+                          if strength == "moderate" else
+                         "Weak relationship — likely not the most useful predictor pair."}
+                    </div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+            # Show all pairs as a quick reference table
+            st.markdown('<div style="font-size:14px;font-weight:600;margin:20px 0 10px;">All Correlated Pairs (r > 0.3)</div>',
+                        unsafe_allow_html=True)
+            pair_rows = ""
+            for p in strong_pairs:
+                v     = p["pearson"]
+                bar_w = int(abs(v) * 100)
+                bc    = "#2F81F7" if v > 0 else "#F85149"
+                sc    = "#3FB950" if p["strength"] == "strong" else \
+                        "#D29922" if p["strength"] == "moderate" else "#8B949E"
+                pair_rows += f"""<tr>
+                  <td class="mono" style="color:var(--fg);">{p['col_a']}</td>
+                  <td class="mono" style="color:var(--fg);">{p['col_b']}</td>
+                  <td><div style="background:{bc};width:{bar_w}%;height:6px;border-radius:3px;"></div></td>
+                  <td class="mono" style="color:{bc};font-weight:600;">{v:+.4f}</td>
+                  <td style="color:{sc};font-size:12px;">{p['strength']}</td>
+                  <td style="color:var(--muted);font-size:12px;">{p['direction']}</td>
+                </tr>"""
+            st.markdown(f"""
+            <div class="card" style="overflow:auto;">
+              <table class="col-table">
+                <thead><tr><th>Column A</th><th>Column B</th><th>Bar</th>
+                <th>r value</th><th>Strength</th><th>Direction</th></tr></thead>
+                <tbody>{pair_rows}</tbody>
+              </table>
+            </div>""", unsafe_allow_html=True)
+
+    # ════════════════════════════════
+    #  TAB 6 — TIME SERIES (optional)
+    # ════════════════════════════════
+    if ts_eda and len(tabs) > 5:
+        with tabs[5]:
+            ts_col = st.selectbox("Select date column", options=list(ts_eda.keys()),
+                                  label_visibility="collapsed", key="_ts_col")
+            ts_d   = ts_eda[ts_col]
+            val_col = ts_d["value_col"]
+
+            monthly = ts_d["monthly"]
+            fig_ts  = go.Figure()
+            fig_ts.add_trace(go.Scatter(
+                x=monthly["periods"], y=monthly["values"],
+                name=val_col, mode="lines+markers",
+                line=dict(color="#2F81F7", width=2),
+                marker=dict(size=5),
+            ))
+            fig_ts.add_trace(go.Scatter(
+                x=monthly["periods"], y=monthly["moving_avg"],
+                name="3-period MA", mode="lines",
+                line=dict(color="#3FB950", width=2, dash="dash"),
+            ))
+            fig_ts.update_layout(
+                **PLOTLY_LAYOUT,
+                title=f"Monthly Trend — {val_col} over {ts_col}",
+                height=380,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            )
+            st.plotly_chart(fig_ts, use_container_width=True)
+
+            weekly = ts_d["weekly"]
+            if weekly["periods"]:
+                fig_w = go.Figure(go.Bar(
+                    x=weekly["periods"], y=weekly["values"],
+                    marker_color="#2F81F7", opacity=0.7,
+                ))
+                fig_w.update_layout(**PLOTLY_LAYOUT,
+                                    title=f"Weekly Trend — {val_col}", height=300)
+                st.plotly_chart(fig_w, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PLACEHOLDER PAGES  (Phases 6–11)
 # ══════════════════════════════════════════════════════════════════════════════
 else:
     COMING = {
-        "EDA":                ("📊", "Phase 5", "EDA Engine",
-                               "Statistics, correlation matrix, skewness, kurtosis, and distribution analysis."),
         "ML Models":          ("🤖", "Phase 7", "Machine Learning Engine",
                                "AutoML — trains and compares regression, classification, and clustering models."),
         "Feature Importance": ("⚡", "Phase 7", "Feature Importance",
