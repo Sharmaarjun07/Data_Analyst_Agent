@@ -707,6 +707,24 @@ elif page == "Cleaning":
                     </div>
                 </div>""", unsafe_allow_html=True)
 
+                # ── View affected rows in dataset ──────────────
+                with st.expander(f"👁️ View {item['missing_count']} rows where **{col_name}** is missing"):
+                    missing_rows = df[df[col_name].isnull()]
+                    st.markdown(
+                        f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
+                        f'Showing {min(200, len(missing_rows))} of {len(missing_rows)} affected rows '
+                        f'· column <span class="mono" style="color:var(--accent);">{col_name}</span> '
+                        f'highlighted</div>',
+                        unsafe_allow_html=True,
+                    )
+                    # Reorder columns so the affected column is first
+                    cols_ordered = [col_name] + [c for c in df.columns if c != col_name]
+                    st.dataframe(
+                        missing_rows[cols_ordered].head(200),
+                        use_container_width=True,
+                        height=250,
+                    )
+
                 c1, c2 = st.columns([2, 1])
                 with c1:
                     opts     = item["fix_options"]
@@ -756,6 +774,21 @@ elif page == "Cleaning":
                 </div>
             </div>""", unsafe_allow_html=True)
 
+            # ── View duplicate rows in dataset ─────────────────
+            dup_rows = df[df.duplicated(keep=False)]
+            with st.expander(f"👁️ View {dup['count']} duplicate rows in dataset"):
+                st.markdown(
+                    f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
+                    f'Showing {min(200, len(dup_rows))} of {len(dup_rows)} rows that are exact duplicates. '
+                    f'Rows are sorted so duplicates appear side-by-side.</div>',
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(
+                    dup_rows.sort_values(by=list(df.columns)).head(200),
+                    use_container_width=True,
+                    height=250,
+                )
+
             dup_choice = st.radio(
                 "Duplicate action",
                 options=["Remove Duplicate Rows", "Keep As-Is"],
@@ -791,6 +824,32 @@ elif page == "Cleaning":
                     </div>
                 </div>""", unsafe_allow_html=True)
 
+                # ── View outlier rows in dataset ────────────────
+                lower_f = item["lower_fence"]
+                upper_f = item["upper_fence"]
+                outlier_mask = (df[col_name] < lower_f) | (df[col_name] > upper_f)
+                outlier_rows = df[outlier_mask]
+                with st.expander(f"👁️ View {item['count']} outlier rows for **{col_name}**"):
+                    st.markdown(
+                        f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
+                        f'Rows where <span class="mono" style="color:var(--accent);">{col_name}</span> '
+                        f'is outside IQR fences '
+                        f'[<span class="mono">{lower_f}</span>, '
+                        f'<span class="mono">{upper_f}</span>]. '
+                        f'Showing {min(200, len(outlier_rows))} of {len(outlier_rows)} rows. '
+                        f'Column sorted first for easy inspection.</div>',
+                        unsafe_allow_html=True,
+                    )
+                    # Put affected column first, sort by it so extreme values are visible
+                    cols_ordered = [col_name] + [c for c in df.columns if c != col_name]
+                    st.dataframe(
+                        outlier_rows[cols_ordered]
+                        .sort_values(by=col_name, ascending=False)
+                        .head(200),
+                        use_container_width=True,
+                        height=250,
+                    )
+
                 opts     = item["fix_options"]
                 opt_lbls = [FIX_LABELS.get(o, o) for o in opts]
                 rec_idx  = opts.index(item["recommended_fix"]) if item["recommended_fix"] in opts else 0
@@ -825,6 +884,21 @@ elif page == "Cleaning":
                     </div>
                     <div style="font-size:12px;color:var(--muted);">{item['reason']}</div>
                 </div>""", unsafe_allow_html=True)
+
+                # ── View problematic rows in dataset ────────────
+                with st.expander(f"👁️ View sample rows for **{col_name}** (current type: {item['current_dtype']})"):
+                    st.markdown(
+                        f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
+                        f'Column <span class="mono" style="color:var(--accent);">{col_name}</span> '
+                        f'is stored as <strong>{item["current_dtype"]}</strong> but should be '
+                        f'<strong>{item["suggested_dtype"]}</strong>. '
+                        f'Inspect the values below to confirm conversion is safe.</div>',
+                        unsafe_allow_html=True,
+                    )
+                    cols_ordered = [col_name] + [c for c in df.columns if c != col_name]
+                    # Show non-null rows so the actual values are visible
+                    sample_rows = df[df[col_name].notna()][cols_ordered].head(200)
+                    st.dataframe(sample_rows, use_container_width=True, height=250)
 
                 opts     = [item["action"], "keep"]
                 opt_lbls = [FIX_LABELS.get(o, o) for o in opts]
