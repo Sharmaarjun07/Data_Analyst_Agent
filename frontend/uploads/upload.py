@@ -1054,7 +1054,8 @@ elif page == "EDA":
                     textposition="outside",
                 ))
                 fig.add_hline(y=0, line_color="#484F58", line_dash="dash")
-                fig.update_layout(**PLOTLY_LAYOUT, title="Skewness by Column", height=320)
+                fig.update_layout(title="Skewness by Column")
+                fig.update_layout(PLOTLY_LAYOUT)
                 st.plotly_chart(fig, use_container_width=True)
 
             with c_right:
@@ -1066,7 +1067,7 @@ elif page == "EDA":
                     textposition="outside",
                 ))
                 fig2.add_hline(y=0, line_color="#484F58", line_dash="dash")
-                fig2.update_layout(**PLOTLY_LAYOUT, title="Kurtosis by Column", height=320)
+                fig2.update_layout(**PLOTLY_LAYOUT, title="Kurtosis by Column", height=320) # type: ignore
                 st.plotly_chart(fig2, use_container_width=True)
 
     # ════════════════════════════════
@@ -1096,7 +1097,7 @@ elif page == "EDA":
                 hoverongaps=False,
             ))
             fig_h.update_layout(
-                **PLOTLY_LAYOUT,
+                **PLOTLY_LAYOUT, # type: ignore
                 title=f"{corr_type} Correlation Heatmap",
                 height=max(350, len(corr_cols) * 45),
             )
@@ -1180,7 +1181,7 @@ elif page == "EDA":
             if st_d.get("median") is not None:
                 fig_dist.add_vline(x=st_d["median"], line_color="#D29922", line_dash="dot",
                                    annotation_text="median", annotation_position="top left")
-            fig_dist.update_layout(**PLOTLY_LAYOUT, title=f"Distribution of '{selected_col}'",
+            fig_dist.update_layout(**PLOTLY_LAYOUT, title=f"Distribution of '{selected_col}'", # type: ignore
                                    height=360, bargap=0.02)
             st.plotly_chart(fig_dist, use_container_width=True)
 
@@ -1193,7 +1194,7 @@ elif page == "EDA":
                 boxmean="sd",
                 fillcolor="rgba(47,129,247,0.15)",
             ))
-            fig_box.update_layout(**PLOTLY_LAYOUT, title=f"Box Plot — '{selected_col}'", height=300)
+            fig_box.update_layout(**PLOTLY_LAYOUT, title=f"Box Plot — '{selected_col}'", height=300) # type: ignore
             st.plotly_chart(fig_box, use_container_width=True)
 
             # Skewness explanation
@@ -1258,7 +1259,7 @@ elif page == "EDA":
                     textposition="outside",
                 ))
                 fig_bar.update_layout(
-                    **PLOTLY_LAYOUT,
+                    **PLOTLY_LAYOUT, # type: ignore
                     title=f"Value Counts — '{cat_col}'",
                     height=max(300, len(labels) * 32),
                 )
@@ -1278,7 +1279,7 @@ elif page == "EDA":
                         textfont_size=11,
                     ))
                     fig_pie.update_layout(
-                        **PLOTLY_LAYOUT,
+                        **PLOTLY_LAYOUT, # type: ignore
                         title=f"Share — '{cat_col}'",
                         height=max(300, len(labels) * 32),
                         showlegend=False,
@@ -1385,7 +1386,7 @@ elif page == "EDA":
             r_color = "#3FB950" if abs(r_val) > 0.7 else "#D29922" if abs(r_val) > 0.4 else "#8B949E"
 
             fig_sc.update_layout(
-                **PLOTLY_LAYOUT,
+                **PLOTLY_LAYOUT, # type: ignore
                 title=f"Scatter: {col_a} vs {col_b}",
                 height=430,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02),
@@ -1471,7 +1472,7 @@ elif page == "EDA":
                 line=dict(color="#3FB950", width=2, dash="dash"),
             ))
             fig_ts.update_layout(
-                **PLOTLY_LAYOUT,
+                **PLOTLY_LAYOUT, # type: ignore
                 title=f"Monthly Trend — {val_col} over {ts_col}",
                 height=380,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02),
@@ -1484,7 +1485,7 @@ elif page == "EDA":
                     x=weekly["periods"], y=weekly["values"],
                     marker_color="#2F81F7", opacity=0.7,
                 ))
-                fig_w.update_layout(**PLOTLY_LAYOUT,
+                fig_w.update_layout(**PLOTLY_LAYOUT, # type: ignore
                                     title=f"Weekly Trend — {val_col}", height=300)
                 st.plotly_chart(fig_w, use_container_width=True)
 
