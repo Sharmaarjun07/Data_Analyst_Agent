@@ -1,0 +1,9 @@
+{
+  "mae": 1.8278,
+  "mse": 6.0132,
+  "rmse": 2.4522,
+  "r2": 0.8771,
+  "explained_variance": 0.8773,
+  "median_absolute_error": 1.431,
+  "mape": 10.35
+}

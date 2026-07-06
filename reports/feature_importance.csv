@@ -1,11 +1,11 @@
 Rank,Feature,Importance
-1,Bare Nuclei,0.299
-2,Uniformity of Cell Shape,0.1546
-3,Uniformity of Cell Size,0.1443
-4,Clump Thickness,0.134
-5,Normal Nucleoli,0.134
-6,Marginal Adhesion,0.0515
-7,Sample code number,0.0309
-8,Bland Chromatin,0.0309
-9,Mitoses,-0.0206
-10,Single Epithelial Cell Size,0.0
+1,lstat,0.6033
+2,rm,0.2457
+3,crim,0.038
+4,nox,0.0366
+5,dis,0.028
+6,ptratio,0.0188
+7,tax,0.0113
+8,age,0.0105
+9,rad,0.0036
+10,indus,0.0023

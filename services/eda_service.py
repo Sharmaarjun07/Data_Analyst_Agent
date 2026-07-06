@@ -7,7 +7,7 @@
 #
 #  Computes everything numerically first.
 #  The LLM (Phase 8) will later read this dict and explain it.
-#  Charts are built in upload.py using Plotly — not here.
+#  Charts are built in the frontend (Plotly / Streamlit) — not here.
 # =============================================================
 
 import pandas as pd
@@ -74,6 +74,39 @@ def _kurt_label(kurt: float) -> str:
     return "normal-tailed (mesokurtic)"
 
 
+def _dtype_category(series: pd.Series, meta_entry: dict) -> str:
+    """Best-effort dtype-category resolver, falling back to pandas dtype."""
+    cat = meta_entry.get("dtype_category")
+    if cat:
+        return cat
+    if pd.api.types.is_numeric_dtype(series):
+        return "numeric"
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "datetime"
+    return "categorical"
+
+
+def _pick_value_column(df: pd.DataFrame, num_cols: list, metadata: dict):
+    """
+    Pick the column to aggregate for time-series analysis.
+    Priority:
+      1. metadata["target_column"] if it exists and is numeric
+      2. a column explicitly flagged as target/measure in metadata["columns"]
+      3. fall back to the first numeric column
+    """
+    target = metadata.get("target_column")
+    if target and target in num_cols:
+        return target
+
+    for c in metadata.get("columns", []):
+        if c.get("is_target") or c.get("role") in ("target", "measure"):
+            name = c.get("name")
+            if name in num_cols:
+                return name
+
+    return num_cols[0] if num_cols else None
+
+
 # ─────────────────────────────────────────────────────────────
 #  MAIN PUBLIC FUNCTION
 # ─────────────────────────────────────────────────────────────
@@ -85,11 +118,16 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
     Returns:
     {
       "computed_at": str,
+      "overview":        { shape, columns:[{name,dtype,dtype_category,missing,missing_pct}],
+                            duplicate_rows, total_missing, total_missing_pct },
       "numeric_stats":   { col: { count, mean, median, std, ... } },
-      "correlation":     { "pearson":  [[...]], "spearman": [[...]], "columns": [...] },
-      "distributions":   { col: { histogram_bins, histogram_counts, kde_x, kde_y } },
+      "outliers":        { col: { method, count, pct, lower_bound, upper_bound,
+                                   sample_values:[...], sample_indices:[...] } },
+      "correlation":     { "pearson":  [[...]], "spearman": [[...]], "columns": [...],
+                            "top_pairs":[...] },
+      "distributions":   { col: { bin_centers, counts, bin_edges } },
       "categorical_eda": { col: { value_counts: [{label,count,pct}], n_unique } },
-      "time_series":     { col: { monthly, weekly, moving_avg_30 } }  — if date exists
+      "time_series":     { col: { value_col, monthly, weekly } }  — if date exists
       "summary_insights":[ plain-English strings the LLM can also enrich ]
     }
     """
@@ -101,7 +139,35 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
                    if cols_meta.get(c, {}).get("dtype_category") == "datetime"
                    or str(df[c].dtype).startswith("datetime")]
 
+    # Fallback: if metadata didn't classify anything as categorical, infer it
+    if not cat_cols:
+        cat_cols = [c for c in df.columns
+                    if c not in num_cols and c not in date_cols]
+
     result = {"computed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+    # ── 0. Data overview (shape, columns, dtypes, missing, duplicates) ──
+    n_rows, n_cols = df.shape
+    columns_overview = []
+    for c in df.columns:
+        miss = int(df[c].isnull().sum())
+        columns_overview.append({
+            "name":           c,
+            "dtype":          str(df[c].dtype),
+            "dtype_category": _dtype_category(df[c], cols_meta.get(c, {})),
+            "missing":        miss,
+            "missing_pct":    round(miss / n_rows * 100, 2) if n_rows else 0.0,
+        })
+    duplicate_rows   = int(df.duplicated().sum())
+    total_missing    = int(df.isnull().sum().sum())
+    result["overview"] = {
+        "shape":              {"rows": n_rows, "columns": n_cols},
+        "columns":            columns_overview,
+        "duplicate_rows":     duplicate_rows,
+        "duplicate_rows_pct": round(duplicate_rows / n_rows * 100, 2) if n_rows else 0.0,
+        "total_missing":      total_missing,
+        "total_missing_pct":  round(total_missing / df.size * 100, 2) if df.size else 0.0,
+    }
 
     # ── 1. Descriptive stats (numeric) ────────────────────────
     numeric_stats = {}
@@ -113,12 +179,40 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
             numeric_stats[col]  = stats
     result["numeric_stats"] = numeric_stats
 
-    # ── 2. Correlation matrices ────────────────────────────────
+    # ── 2. Outlier detection (IQR method) ─────────────────────
+    outliers = {}
+    for col in num_cols:
+        clean = df[col].dropna()
+        if len(clean) < 4:
+            continue
+        q1, q3 = clean.quantile(0.25), clean.quantile(0.75)
+        iqr    = q3 - q1
+        if iqr == 0:
+            lower, upper = q1, q3
+        else:
+            lower = q1 - 1.5 * iqr
+            upper = q3 + 1.5 * iqr
+        mask     = (clean < lower) | (clean > upper)
+        out_vals = clean[mask]
+        outliers[col] = {
+            "method":         "IQR (1.5x)",
+            "count":          int(out_vals.count()),
+            "pct":            round(out_vals.count() / len(clean) * 100, 2),
+            "lower_bound":    _safe_float(lower),
+            "upper_bound":    _safe_float(upper),
+            "sample_values":  [_safe_float(v) for v in out_vals.head(10).tolist()],
+            "sample_indices": [int(i) for i in out_vals.head(10).index.tolist()],
+        }
+    result["outliers"] = outliers
+
+    # ── 3. Correlation matrices (pairwise deletion, not listwise) ─
     corr_result = {"columns": [], "pearson": [], "spearman": []}
     if len(num_cols) >= 2:
-        num_df   = df[num_cols].dropna()
-        pearson  = num_df.corr(method="pearson")
-        spearman = num_df.corr(method="spearman")
+        # Using df[num_cols].corr() directly lets pandas perform
+        # pairwise deletion per pair of columns, instead of dropping
+        # every row that has *any* missing value across *any* column.
+        pearson  = df[num_cols].corr(method="pearson")
+        spearman = df[num_cols].corr(method="spearman")
         corr_result["columns"] = num_cols
         corr_result["pearson"]  = [
             [_safe_float(v) for v in row] for row in pearson.values
@@ -147,7 +241,9 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
         corr_result["top_pairs"] = pairs[:10]
     result["correlation"] = corr_result
 
-    # ── 3. Distribution data (for histograms) ─────────────────
+    # ── 4. Distribution data (for histograms / boxplots) ──────
+    # Kept here (in addition to frontend Plotly histograms) so that
+    # non-visual consumers (e.g. the Phase 8 LLM) have bin data too.
     distributions = {}
     for col in num_cols:
         clean = df[col].dropna()
@@ -163,7 +259,7 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
         }
     result["distributions"] = distributions
 
-    # ── 4. Categorical EDA ────────────────────────────────────
+    # ── 5. Categorical EDA ────────────────────────────────────
     categorical_eda = {}
     for col in cat_cols:
         vc      = df[col].value_counts(dropna=False)
@@ -182,11 +278,11 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
         }
     result["categorical_eda"] = categorical_eda
 
-    # ── 5. Time-series EDA (if date column exists) ────────────
+    # ── 6. Time-series EDA (if date column exists) ────────────
     time_series = {}
+    val_col = _pick_value_column(df, num_cols, metadata)
     for col in date_cols:
         try:
-            # Try to find a useful numeric column to aggregate
             ts_series = pd.to_datetime(df[col], errors="coerce")
             if ts_series.isna().mean() > 0.5:
                 continue
@@ -194,8 +290,6 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
             temp_df["_ts"] = ts_series
             temp_df        = temp_df.dropna(subset=["_ts"])
 
-            # Pick first numeric column as value
-            val_col = num_cols[0] if num_cols else None
             if val_col is None:
                 continue
 
@@ -205,7 +299,6 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
             monthly = temp_df.groupby("_month")[val_col].sum().reset_index()
             weekly  = temp_df.groupby("_week")[val_col].sum().reset_index()
 
-            # 30-period moving average on monthly
             monthly["_ma"] = monthly[val_col].rolling(window=3, min_periods=1).mean()
 
             time_series[col] = {
@@ -216,7 +309,7 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
                     "moving_avg": [_safe_float(v) for v in monthly["_ma"]],
                 },
                 "weekly": {
-                    "periods": weekly["_week"].tolist()[:52],   # cap at 52 weeks
+                    "periods": weekly["_week"].tolist()[:52],
                     "values":  [_safe_float(v) for v in weekly[val_col]][:52],
                 },
             }
@@ -224,16 +317,31 @@ def run_eda(df: pd.DataFrame, metadata: dict) -> dict:
             continue
     result["time_series"] = time_series
 
-    # ── 6. Plain-English summary insights ─────────────────────
+    # ── 7. Plain-English summary insights ─────────────────────
     insights = []
 
+    # Duplicates
+    if duplicate_rows == 0:
+        insights.append("✅ No duplicate rows found.")
+    else:
+        insights.append(
+            f"🧬 {duplicate_rows:,} duplicate rows found "
+            f"({result['overview']['duplicate_rows_pct']}% of data)."
+        )
+
     # Missing summary
-    miss_total = int(df.isnull().sum().sum())
-    if miss_total == 0:
+    if total_missing == 0:
         insights.append("✅ No missing values — dataset is complete.")
     else:
-        miss_pct = round(miss_total / df.size * 100, 1)
-        insights.append(f"⚠️ {miss_total:,} missing cells ({miss_pct}% of data).")
+        insights.append(f"⚠️ {total_missing:,} missing cells ({result['overview']['total_missing_pct']}% of data).")
+
+    # Outlier insights
+    for col, o in outliers.items():
+        if o["count"] > 0:
+            insights.append(
+                f"🚨 '{col}' has {o['count']} outlier(s) ({o['pct']}%) "
+                f"outside [{o['lower_bound']}, {o['upper_bound']}] via IQR method."
+            )
 
     # Skewness insights
     for col, st_dict in numeric_stats.items():

@@ -1,8 +1,11 @@
-run_name,timestamp,accuracy,precision,recall,f1,meta_problem_type,meta_target,meta_model
-Extra Trees_7d919473,2026-07-05T23:37:17.631801,96.3,96.33,96.3,96.31,classification,Class,Extra Trees
-Extra Trees_66d8f48b,2026-07-05T23:37:36.695180,96.3,96.33,96.3,96.31,classification,Class,Extra Trees
-Extra Trees_3e9472d6,2026-07-05T23:38:06.597617,96.3,96.33,96.3,96.31,classification,Class,Extra Trees
-Extra Trees_264e719a,2026-07-06T11:38:09.900244,96.3,96.33,96.3,96.31,classification,Class,Extra Trees
-Extra Trees_0395ea4c,2026-07-06T12:07:34.936301,96.3,96.33,96.3,96.31,classification,Class,Extra Trees
-Extra Trees_ed8a7a17,2026-07-06T12:10:59.465060,96.3,96.33,96.3,96.31,classification,Class,Extra Trees
-Extra Trees_cc783858,2026-07-06T12:23:11.797844,96.3,96.33,96.3,96.31,classification,Class,Extra Trees
+run_name,timestamp,accuracy,precision,recall,f1,meta_problem_type,meta_target,meta_model,mae,mse,rmse,r2,explained_variance,median_absolute_error,mape
+Extra Trees_7d919473,2026-07-05T23:37:17.631801,96.3,96.33,96.3,96.31,classification,Class,Extra Trees,,,,,,,
+Extra Trees_66d8f48b,2026-07-05T23:37:36.695180,96.3,96.33,96.3,96.31,classification,Class,Extra Trees,,,,,,,
+Extra Trees_3e9472d6,2026-07-05T23:38:06.597617,96.3,96.33,96.3,96.31,classification,Class,Extra Trees,,,,,,,
+Extra Trees_264e719a,2026-07-06T11:38:09.900244,96.3,96.33,96.3,96.31,classification,Class,Extra Trees,,,,,,,
+Extra Trees_0395ea4c,2026-07-06T12:07:34.936301,96.3,96.33,96.3,96.31,classification,Class,Extra Trees,,,,,,,
+Extra Trees_ed8a7a17,2026-07-06T12:10:59.465060,96.3,96.33,96.3,96.31,classification,Class,Extra Trees,,,,,,,
+Extra Trees_cc783858,2026-07-06T12:23:11.797844,96.3,96.33,96.3,96.31,classification,Class,Extra Trees,,,,,,,
+Random Forest_b63f458f,2026-07-06T20:18:20.024687,,,,,regression,medv,Random Forest,1.8278,6.0132,2.4522,0.8771,0.8773,1.431,10.35
+Extra Trees_0d3b2b91,2026-07-06T20:19:39.831600,96.3,96.33,96.3,96.31,classification,Class,Extra Trees,,,,,,,
+Random Forest_377814a2,2026-07-07T00:31:45.241487,,,,,regression,medv,Random Forest,1.8278,6.0132,2.4522,0.8771,0.8773,1.431,10.35

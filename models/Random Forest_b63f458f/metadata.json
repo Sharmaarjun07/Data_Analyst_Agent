@@ -1,0 +1,130 @@
+{
+  "experiment_id": "b63f458f-b049-46a6-99c8-361ece4817f3",
+  "problem_type": "regression",
+  "target": "medv",
+  "model": "Random Forest",
+  "training_timestamp": "2026-07-06T20:18:19.946568",
+  "model_type": "Pipeline",
+  "model_params": {
+    "memory": null,
+    "steps": [
+      [
+        "preprocessor",
+        "ColumnTransformer(transformers=[('num',\n                                 Pipeline(steps=[('imputer',\n                                                  SimpleImputer(strategy='median')),\n                                                 ('scaler', StandardScaler())]),\n                                 ['crim', 'zn', 'indus', 'chas', 'nox', 'rm',\n                                  'age', 'dis', 'rad', 'tax', 'ptratio',\n                                  'black', 'lstat']),\n                                ('cat',\n                                 Pipeline(steps=[('imputer',\n                                                  SimpleImputer(strategy='most_frequent')),\n                                                 ('encoder',\n                                                  OneHotEncoder(handle_unknown='ignore',\n                                                                sparse_output=False))]),\n                                 [])])"
+      ],
+      [
+        "model",
+        "RandomForestRegressor(random_state=42)"
+      ]
+    ],
+    "transform_input": null,
+    "verbose": false,
+    "preprocessor": "ColumnTransformer(transformers=[('num',\n                                 Pipeline(steps=[('imputer',\n                                                  SimpleImputer(strategy='median')),\n                                                 ('scaler', StandardScaler())]),\n                                 ['crim', 'zn', 'indus', 'chas', 'nox', 'rm',\n                                  'age', 'dis', 'rad', 'tax', 'ptratio',\n                                  'black', 'lstat']),\n                                ('cat',\n                                 Pipeline(steps=[('imputer',\n                                                  SimpleImputer(strategy='most_frequent')),\n                                                 ('encoder',\n                                                  OneHotEncoder(handle_unknown='ignore',\n                                                                sparse_output=False))]),\n                                 [])])",
+    "model": "RandomForestRegressor(random_state=42)",
+    "preprocessor__n_jobs": null,
+    "preprocessor__remainder": "drop",
+    "preprocessor__sparse_threshold": 0.3,
+    "preprocessor__transformer_weights": null,
+    "preprocessor__transformers": [
+      [
+        "num",
+        "Pipeline(steps=[('imputer', SimpleImputer(strategy='median')),\n                ('scaler', StandardScaler())])",
+        [
+          "crim",
+          "zn",
+          "indus",
+          "chas",
+          "nox",
+          "rm",
+          "age",
+          "dis",
+          "rad",
+          "tax",
+          "ptratio",
+          "black",
+          "lstat"
+        ]
+      ],
+      [
+        "cat",
+        "Pipeline(steps=[('imputer', SimpleImputer(strategy='most_frequent')),\n                ('encoder',\n                 OneHotEncoder(handle_unknown='ignore', sparse_output=False))])",
+        []
+      ]
+    ],
+    "preprocessor__verbose": false,
+    "preprocessor__verbose_feature_names_out": true,
+    "preprocessor__num": "Pipeline(steps=[('imputer', SimpleImputer(strategy='median')),\n                ('scaler', StandardScaler())])",
+    "preprocessor__cat": "Pipeline(steps=[('imputer', SimpleImputer(strategy='most_frequent')),\n                ('encoder',\n                 OneHotEncoder(handle_unknown='ignore', sparse_output=False))])",
+    "preprocessor__num__memory": null,
+    "preprocessor__num__steps": [
+      [
+        "imputer",
+        "SimpleImputer(strategy='median')"
+      ],
+      [
+        "scaler",
+        "StandardScaler()"
+      ]
+    ],
+    "preprocessor__num__transform_input": null,
+    "preprocessor__num__verbose": false,
+    "preprocessor__num__imputer": "SimpleImputer(strategy='median')",
+    "preprocessor__num__scaler": "StandardScaler()",
+    "preprocessor__num__imputer__add_indicator": false,
+    "preprocessor__num__imputer__copy": true,
+    "preprocessor__num__imputer__fill_value": null,
+    "preprocessor__num__imputer__keep_empty_features": false,
+    "preprocessor__num__imputer__missing_values": NaN,
+    "preprocessor__num__imputer__strategy": "median",
+    "preprocessor__num__scaler__copy": true,
+    "preprocessor__num__scaler__with_mean": true,
+    "preprocessor__num__scaler__with_std": true,
+    "preprocessor__cat__memory": null,
+    "preprocessor__cat__steps": [
+      [
+        "imputer",
+        "SimpleImputer(strategy='most_frequent')"
+      ],
+      [
+        "encoder",
+        "OneHotEncoder(handle_unknown='ignore', sparse_output=False)"
+      ]
+    ],
+    "preprocessor__cat__transform_input": null,
+    "preprocessor__cat__verbose": false,
+    "preprocessor__cat__imputer": "SimpleImputer(strategy='most_frequent')",
+    "preprocessor__cat__encoder": "OneHotEncoder(handle_unknown='ignore', sparse_output=False)",
+    "preprocessor__cat__imputer__add_indicator": false,
+    "preprocessor__cat__imputer__copy": true,
+    "preprocessor__cat__imputer__fill_value": null,
+    "preprocessor__cat__imputer__keep_empty_features": false,
+    "preprocessor__cat__imputer__missing_values": NaN,
+    "preprocessor__cat__imputer__strategy": "most_frequent",
+    "preprocessor__cat__encoder__categories": "auto",
+    "preprocessor__cat__encoder__drop": null,
+    "preprocessor__cat__encoder__dtype": "<class 'numpy.float64'>",
+    "preprocessor__cat__encoder__feature_name_combiner": "concat",
+    "preprocessor__cat__encoder__handle_unknown": "ignore",
+    "preprocessor__cat__encoder__max_categories": null,
+    "preprocessor__cat__encoder__min_frequency": null,
+    "preprocessor__cat__encoder__sparse_output": false,
+    "model__bootstrap": true,
+    "model__ccp_alpha": 0.0,
+    "model__criterion": "squared_error",
+    "model__max_depth": null,
+    "model__max_features": 1.0,
+    "model__max_leaf_nodes": null,
+    "model__max_samples": null,
+    "model__min_impurity_decrease": 0.0,
+    "model__min_samples_leaf": 1,
+    "model__min_samples_split": 2,
+    "model__min_weight_fraction_leaf": 0.0,
+    "model__monotonic_cst": null,
+    "model__n_estimators": 100,
+    "model__n_jobs": null,
+    "model__oob_score": false,
+    "model__random_state": 42,
+    "model__verbose": 0,
+    "model__warm_start": false
+  }
+}
