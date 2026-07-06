@@ -1,1597 +1,1606 @@
-"""
-upload.py  —  AI Data Analyst Agent
-Phases completed:
-  ✅ Phase 1 — Project Setup
-  ✅ Phase 2 — File Upload / Dashboard page
-  ✅ Phase 3 — Metadata Engine + Dataset page
-  ✅ Phase 4 — Data Cleaning Engine + Cleaning page
-  ✅ Phase 5 — EDA Engine + EDA page
-
-Run:
-  streamlit run frontend/uploads/upload.py
-
-Folder structure expected:
-  AI_Data_Analyst/
-  ├── frontend/uploads/upload.py    ← this file
-  ├── services/metadata_service.py
-  ├── services/cleaning_service.py
-  └── requirements.txt
-"""
-
-import sys, os, time, copy
-import pandas as pd
-import numpy as np
-import streamlit as st
-
-# ── Path setup so both services can be imported ────────────────────────────
-ROOT     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SELF_DIR = os.path.dirname(os.path.abspath(__file__))
-for p in (ROOT, SELF_DIR):
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
-try:
-    from services.metadata_service import extract_metadata
-except ImportError:
-    def extract_metadata(df, filename="dataset.csv"):
-        return {"overview": {}, "quality": {}, "columns": [], "target_candidates": []}
-
-try:
-    from services.cleaning_service import analyze_issues, apply_cleaning
-except ImportError:
-    def analyze_issues(df, metadata):
-        return {"summary": {}, "missing": [], "duplicates": {}, "outliers": [], "type_issues": []}
-    def apply_cleaning(df, plan):
-        return df.copy(), {"steps": [], "rows_before": len(df), "rows_after": len(df),
-                           "rows_removed": 0, "cols_before": df.shape[1],
-                           "cols_after": df.shape[1], "total_actions": 0,
-                           "applied_at": ""}
-
-try:
-    from services.eda_service import run_eda
-except ImportError:
-    def run_eda(df, metadata):
-        return {"computed_at": "", "numeric_stats": {}, "correlation": {},
-                "distributions": {}, "categorical_eda": {}, "time_series": {},
-                "summary_insights": []}
-
-# ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Data Analyst Agent", page_icon="🤖",
-                   layout="wide", initial_sidebar_state="expanded")
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  GLOBAL CSS
-# ─────────────────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-:root{
-  --bg:#0D1117; --card:#161B22; --card-alt:#1C2333; --border:#30363D;
-  --accent:#2F81F7; --glow:rgba(47,129,247,.15); --dim-a:#1A4A9E;
-  --green:#3FB950; --yellow:#D29922; --red:#F85149;
-  --muted:#8B949E; --dim:#484F58; --fg:#E6EDF3;
-}
-html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;font-family:'Inter',sans-serif!important;color:var(--fg)!important;}
-[data-testid="stHeader"]{background:transparent!important;}
-#MainMenu,footer,[data-testid="stToolbar"]{visibility:hidden;}
-
-/* sidebar */
-[data-testid="stSidebar"]{background:var(--card)!important;border-right:1px solid var(--border)!important;}
-[data-testid="stSidebar"]>div:first-child{padding-top:0!important;}
-.sb-brand{padding:20px 16px 8px;border-bottom:1px solid var(--border);margin-bottom:10px;}
-.sb-brand-t{font-size:13px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);}
-.sb-brand-s{font-size:11px;color:var(--dim);margin-top:2px;}
-.sec-lbl{font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:14px 14px 4px;}
-.nav-html{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;margin:3px 0;font-size:14px;font-weight:500;color:var(--muted);}
-.nav-html.active{background:var(--glow);color:var(--accent);border-left:3px solid var(--accent);padding-left:11px;}
-.nav-html.locked{opacity:.35;}
-.lock-badge{font-size:10px;color:var(--yellow);background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.25);border-radius:4px;padding:2px 7px;margin-left:auto;}
-
-/* nav buttons */
-div.stButton>button{background:transparent!important;color:var(--muted)!important;border:none!important;border-radius:8px!important;font-size:14px!important;font-weight:500!important;padding:10px 14px!important;text-align:left!important;width:100%!important;font-family:'Inter',sans-serif!important;transition:all .2s!important;}
-div.stButton>button:hover{background:var(--glow)!important;color:var(--accent)!important;}
-
-/* primary action button */
-.stButton.primary>button,div[data-testid="stFormSubmitButton"]>button{background:var(--accent)!important;color:#fff!important;border-radius:8px!important;font-weight:600!important;}
-
-/* cards */
-.card{background:var(--card);border:1px solid var(--border);border-radius:14px;}
-
-/* kpi */
-.kpi-row{display:flex;gap:14px;margin:24px 0;flex-wrap:wrap;}
-.kpi-card{flex:1;min-width:130px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;}
-.kpi-lbl{font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;}
-.kpi-val{font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;}
-.kpi-sub{font-size:11px;color:var(--dim);margin-top:3px;}
-
-/* hero */
-.hero{padding:36px 0 12px;border-bottom:1px solid var(--border);margin-bottom:28px;}
-.hero-t{font-size:32px;font-weight:700;letter-spacing:-.02em;line-height:1.2;}
-.hero-t span{color:var(--accent);}
-.hero-s{font-size:14px;color:var(--muted);margin-top:6px;}
-.spill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;padding:4px 12px;border-radius:20px;margin-top:14px;}
-.spill.idle{background:rgba(139,148,158,.1);color:var(--muted);border:1px solid var(--border);}
-.spill.ready{background:rgba(63,185,80,.1);color:var(--green);border:1px solid rgba(63,185,80,.3);}
-.sdot{width:7px;height:7px;border-radius:50%;background:currentColor;}
-
-/* upload */
-.upload-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:36px 40px;text-align:center;position:relative;overflow:hidden;}
-.upload-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);}
-.upload-icon{width:72px;height:72px;margin:0 auto 18px;background:var(--glow);border:1.5px solid var(--dim-a);border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:30px;}
-.upload-title{font-size:18px;font-weight:600;margin-bottom:6px;}
-.upload-sub{font-size:13px;color:var(--muted);margin-bottom:22px;line-height:1.5;}
-.chip-row{display:flex;gap:8px;justify-content:center;margin-bottom:22px;flex-wrap:wrap;}
-.chip{font-size:11px;font-weight:500;font-family:'JetBrains Mono',monospace;color:var(--accent);background:var(--glow);border:1px solid var(--dim-a);border-radius:6px;padding:3px 10px;}
-
-/* file uploader */
-[data-testid="stFileUploaderDropzone"]{background:rgba(47,129,247,.04)!important;border:1.5px dashed var(--dim-a)!important;border-radius:10px!important;}
-[data-testid="stFileUploaderDropzone"]:hover{background:var(--glow)!important;border-color:var(--accent)!important;}
-
-/* unlock banner */
-.ubanner{background:linear-gradient(135deg,rgba(63,185,80,.08),rgba(47,129,247,.08));border:1px solid rgba(63,185,80,.25);border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:14px;margin:16px 0;}
-
-/* preview card */
-.prev-card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;}
-.prev-hdr{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--card-alt);}
-.prev-t{font-size:13px;font-weight:600;}
-.prev-m{font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;}
-
-/* badges */
-.badge{font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;font-family:'JetBrains Mono',monospace;}
-.b-num{background:rgba(47,129,247,.12);color:var(--accent);}
-.b-cat{background:rgba(63,185,80,.12);color:var(--green);}
-.b-dat{background:rgba(210,153,34,.12);color:var(--yellow);}
-.b-txt{background:rgba(139,148,158,.1);color:var(--muted);}
-
-/* column table */
-.col-table{width:100%;border-collapse:collapse;font-size:13px;}
-.col-table th{text-align:left;font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:10px 14px;border-bottom:1px solid var(--border);background:var(--card-alt);}
-.col-table td{padding:10px 14px;border-bottom:1px solid rgba(48,54,61,.5);vertical-align:top;}
-.col-table tr:last-child td{border-bottom:none;}
-.col-table tr:hover td{background:rgba(47,129,247,.04);}
-.mono{font-family:'JetBrains Mono',monospace;}
-
-/* ── CLEANING PAGE ── */
-.issue-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:12px;transition:border-color .2s;}
-.issue-card:hover{border-color:var(--accent);}
-.issue-header{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
-.issue-col-name{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:var(--fg);}
-.issue-stat{font-size:12px;color:var(--muted);}
-.severity-high{color:var(--red);}
-.severity-med{color:var(--yellow);}
-.severity-low{color:var(--green);}
-
-/* report table */
-.report-table{width:100%;border-collapse:collapse;font-size:13px;}
-.report-table th{text-align:left;font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:10px 14px;border-bottom:1px solid var(--border);background:var(--card-alt);}
-.report-table td{padding:10px 14px;border-bottom:1px solid rgba(48,54,61,.5);vertical-align:middle;}
-.report-table tr:last-child td{border-bottom:none;}
-
-/* before/after compare */
-.compare-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;text-align:center;}
-.compare-val{font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;margin:8px 0;}
-.compare-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);}
-.compare-delta{font-size:13px;margin-top:4px;}
-
-/* progress */
-[data-testid="stProgress"]>div>div{background:var(--accent)!important;}
-
-/* tabs */
-[data-testid="stTabs"] button{color:var(--muted)!important;font-family:'Inter',sans-serif!important;}
-[data-testid="stTabs"] button[aria-selected="true"]{color:var(--accent)!important;border-bottom-color:var(--accent)!important;}
-
-/* select box */
-[data-testid="stSelectbox"] label{color:var(--muted)!important;font-size:12px!important;}
-
-/* scrollbar */
-::-webkit-scrollbar{width:6px;height:6px;}
-::-webkit-scrollbar-track{background:transparent;}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:10px;}
-</style>
-""", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  SESSION STATE
-# ─────────────────────────────────────────────────────────────────────────────
-_defaults = {
-    "df":            None,   # original uploaded df
-    "cleaned_df":    None,   # after Phase 4
-    "filename":      None,
-    "metadata":      None,   # from Phase 3
-    "cleaning_issues": None, # from Phase 4 analyze_issues
-    "cleaning_report": None, # from Phase 4 apply_cleaning
-    "eda_result":    None,   # from Phase 5 run_eda
-    "active_page":   "Dashboard",
-}
-for k, v in _defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
-def fmt_num(n):
-    if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
-    if n >= 1_000:     return f"{n/1_000:.1f}K"
-    return str(n)
-
-def fmt_bytes(b):
-    if b < 1024: return f"{b} B"
-    if b < 1024**2: return f"{b/1024:.1f} KB"
-    return f"{b/1024**2:.1f} MB"
-
-DTYPE_BADGE = {
-    "numeric":     '<span class="badge b-num">NUM</span>',
-    "categorical": '<span class="badge b-cat">CAT</span>',
-    "datetime":    '<span class="badge b-dat">DATE</span>',
-    "text":        '<span class="badge b-txt">TEXT</span>',
-}
-GRADE_COLOR = {"A":"#3FB950","B":"#2F81F7","C":"#D29922","D":"#F85149","F":"#F85149"}
-
-FIX_LABELS = {
-    "fill_median":    "Fill with Median",
-    "fill_mean":      "Fill with Mean",
-    "fill_mode":      "Fill with Most Frequent",
-    "fill_constant":  "Fill with Constant Value",
-    "drop_column":    "Drop Entire Column",
-    "drop_rows":      "Drop Rows with Missing",
-    "winsorize":      "Winsorize (Clip to IQR Fences)",
-    "keep":           "Keep As-Is",
-    "drop_duplicates":"Remove Duplicate Rows",
-    "convert_numeric":"Convert to Numeric",
-    "convert_datetime":"Convert to Datetime",
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  SIDEBAR
-# ─────────────────────────────────────────────────────────────────────────────
-locked = st.session_state.df is None
-NAV = [
-    ("Dashboard",          "🏠", False),
-    ("Dataset",            "📂", locked),
-    ("Cleaning",           "✂️", locked),
-    ("EDA",                "📊", locked),
-    ("ML Models",          "🤖", locked),
-    ("Feature Importance", "⚡", locked),
-    ("AI Insights",        "💡", locked),
-    ("Reports",            "📄", locked),
-    ("Chat",               "💬", locked),
-]
-
-with st.sidebar:
-    st.markdown("""
-    <div class="sb-brand">
-        <div class="sb-brand-t">⚡ Data Analyst Agent</div>
-        <div class="sb-brand-s">AI-Powered Analysis Platform</div>
-    </div>
-    <div class="sec-lbl">Navigation</div>
-    """, unsafe_allow_html=True)
-
-    for label, icon, is_locked in NAV:
-        if is_locked:
-            st.markdown(f"""
-            <div class="nav-html locked">
-                <span>{icon}</span><span>{label}</span>
-                <span class="lock-badge">🔒 Upload first</span>
-            </div>""", unsafe_allow_html=True)
-        else:
-            active = st.session_state.active_page == label
-            # st.markdown(f"""
-            # <div class="nav-html {'active' if active else ''}">
-            #     <span>{icon}</span><span>{label}</span>
-            # </div>""", unsafe_allow_html=True)
-            if st.button(f"{icon}  {label}", key=f"_nav_{label}"):
-                st.session_state.active_page = label
-                st.rerun()
-
-    st.markdown('<div class="sec-lbl" style="margin-top:10px;">System</div>',
-                unsafe_allow_html=True)
-    st.markdown('<div class="nav-html"><span>⚙️</span><span>Settings</span></div>',
-                unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  PAGE ROUTER
-# ─────────────────────────────────────────────────────────────────────────────
-page = st.session_state.active_page
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  DASHBOARD
-# ══════════════════════════════════════════════════════════════════════════════
-if page == "Dashboard":
-    status_cls  = "ready" if not locked else "idle"
-    status_text = "Dataset loaded — all modules unlocked" if not locked else "Waiting for dataset upload"
-    st.markdown(f"""
-    <div class="hero">
-        <div class="hero-t">Data <span>Analyst</span> Agent</div>
-        <div class="hero-s">Upload a CSV to unlock automated cleaning, EDA, ML, insights, and reports.</div>
-        <div class="spill {status_cls}"><span class="sdot"></span>{status_text}</div>
-    </div>""", unsafe_allow_html=True)
-
-    if locked:
-        st.markdown("""
-        <div class="upload-card">
-            <div class="upload-icon">📁</div>
-            <div class="upload-title">Upload your dataset to get started</div>
-            <div class="upload-sub">The agent will automatically clean it, analyse it,
-                train models, and generate a full report.</div>
-            <div class="chip-row">
-                <span class="chip">.csv</span>
-                <span class="chip">UTF-8</span>
-                <span class="chip">comma-separated</span>
-                <span class="chip">up to 200 MB</span>
-            </div>
-        </div>""", unsafe_allow_html=True)
-
-        uploaded = st.file_uploader("Choose CSV", type=["csv"], label_visibility="collapsed")
-        if uploaded:
-            bar = st.progress(0, text="Reading file…")
-            try:
-                for pct in range(0, 81, 20):
-                    time.sleep(0.05)
-                    bar.progress(pct, text=f"Loading… {pct}%")
-                df = pd.read_csv(uploaded)
-                bar.progress(85, text="Extracting metadata…")
-                meta   = extract_metadata(df, uploaded.name)
-                bar.progress(95, text="Analysing cleaning issues…")
-                issues = analyze_issues(df, meta)
-                bar.progress(100, text="✅ Done!")
-                st.session_state.df              = df
-                st.session_state.filename        = uploaded.name
-                st.session_state.metadata        = meta
-                st.session_state.cleaning_issues = issues
-                time.sleep(0.3)
-                st.rerun()
-            except Exception as e:
-                bar.empty()
-                st.error(f"❌ Could not read file: {e}")
-    else:
-        df   = st.session_state.df
-        meta = st.session_state.metadata
-        ov   = meta["overview"]
-        ql   = meta["quality"]
-        dc   = ov.get("dtype_counts", {})
-
-        st.markdown(f"""
-        <div class="ubanner">
-            <div style="font-size:24px;">🎉</div>
-            <div>
-                <div style="font-size:14px;font-weight:600;color:var(--green);">All modules unlocked</div>
-                <div style="font-size:12px;color:var(--muted);"><strong>{ov['filename']}</strong>
-                loaded — use the sidebar to navigate.</div>
-            </div>
-        </div>""", unsafe_allow_html=True)
-
-        issues = st.session_state.cleaning_issues or {}
-        sm     = issues.get("summary", {})
-        total_issues = sm.get("total_issues", 0)
-
-        st.markdown(f"""
-        <div class="kpi-row">
-            <div class="kpi-card">
-                <div class="kpi-lbl">Rows</div>
-                <div class="kpi-val">{fmt_num(ov['n_rows'])}</div>
-                <div class="kpi-sub">records</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-lbl">Columns</div>
-                <div class="kpi-val">{ov['n_cols']}</div>
-                <div class="kpi-sub">{dc.get('numeric',0)} num · {dc.get('categorical',0)} cat</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-lbl">Missing Cells</div>
-                <div class="kpi-val" style="color:{'var(--yellow)' if ov['missing_cells']>0 else 'var(--green)'};">
-                    {fmt_num(ov['missing_cells'])}</div>
-                <div class="kpi-sub">{ov['missing_pct']}% of all cells</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-lbl">Duplicate Rows</div>
-                <div class="kpi-val" style="color:{'var(--yellow)' if ov['dup_count']>0 else 'var(--green)'};">
-                    {ov['dup_count']}</div>
-                <div class="kpi-sub">{"needs cleaning" if ov['dup_count']>0 else "✅ none found"}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-lbl">Data Quality</div>
-                <div class="kpi-val" style="color:{GRADE_COLOR.get(ql['grade'],'#fff')};">
-                    {ql['score']}</div>
-                <div class="kpi-sub">Grade {ql['grade']} / 100</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-lbl">Cleaning Issues</div>
-                <div class="kpi-val" style="color:{'var(--red)' if total_issues>5 else 'var(--yellow)' if total_issues>0 else 'var(--green)'};">
-                    {total_issues}</div>
-                <div class="kpi-sub">{"→ go to Cleaning" if total_issues>0 else "✅ dataset looks clean"}</div>
-            </div>
-        </div>""", unsafe_allow_html=True)
-
-        st.markdown(f"""
-        <div class="prev-card">
-            <div class="prev-hdr">
-                <span class="prev-t">📋 Dataset Preview</span>
-                <span class="prev-m">First 10 rows · {ov['n_rows']} total</span>
-            </div>
-        </div>""", unsafe_allow_html=True)
-        st.dataframe(df.head(10), use_container_width=True, height=300)
-
-        with st.expander("⬆️  Upload a different file"):
-            nf = st.file_uploader("Replace", type=["csv"], label_visibility="collapsed", key="_rep")
-            if nf:
-                try:
-                    df2 = pd.read_csv(nf)
-                    m2  = extract_metadata(df2, nf.name)
-                    i2  = analyze_issues(df2, m2)
-                    st.session_state.update({"df": df2, "filename": nf.name, "metadata": m2,
-                                             "cleaning_issues": i2, "cleaned_df": None,
-                                             "cleaning_report": None})
-                    st.success(f"✅ Replaced with **{nf.name}**")
-                    time.sleep(0.4)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ {e}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  DATASET PAGE  (Phase 3)
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "Dataset":
-    meta = st.session_state.metadata
-    df   = st.session_state.df
-    ov   = meta["overview"]
-    ql   = meta["quality"]
-    cols = meta["columns"]
-    dc   = ov.get("dtype_counts", {})
-
-    st.markdown(f"""
-    <div class="hero">
-        <div class="hero-t">Dataset <span>Overview</span></div>
-        <div class="hero-s">Deep column-level metadata for <strong>{ov['filename']}</strong>
-        · extracted at {ov['extracted_at']}</div>
-    </div>""", unsafe_allow_html=True)
-
-    q_col, o_col = st.columns([1, 3], gap="large")
-    with q_col:
-        gc = GRADE_COLOR.get(ql["grade"], "#fff")
-        st.markdown(f"""
-        <div class="card" style="padding:24px 20px;text-align:center;">
-            <div style="font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
-                        color:var(--muted);margin-bottom:14px;">DATA QUALITY SCORE</div>
-            <div style="font-size:60px;font-weight:700;font-family:'JetBrains Mono',monospace;
-                        color:{gc};line-height:1;">{ql['score']}</div>
-            <div style="font-size:12px;color:var(--muted);margin-top:4px;">out of 100</div>
-            <div style="font-size:26px;font-weight:700;color:{gc};margin-top:8px;">Grade {ql['grade']}</div>
-        </div>""", unsafe_allow_html=True)
-        st.progress(int(ql["score"]) / 100)
-        issues_q = ql.get("issues", {})
-        items = []
-
-        if issues_q.get("missing_cells",0):
-            items.append(
-                f"⚠️ {fmt_num(issues_q['missing_cells'])} missing cells"
-            )
-
-        if issues_q.get("duplicate_rows",0):
-            items.append(
-                f"⚠️ {issues_q['duplicate_rows']} duplicate rows"
-            )
-
-        if issues_q.get("high_missing_cols"):
-            items.append(
-                f"⚠️ {len(issues_q['high_missing_cols'])} columns >30% missing"
-            )
-
-        outlier_columns = sum(
-            1
-            for c in cols
-            if c.get("outliers",0) > 0
-        )
-
-        total_outliers = sum(
-            c.get("outliers",0)
-            for c in cols
-        )
-
-        if outlier_columns:
-            items.append(
-                f"⚠️ {outlier_columns} numeric columns contain {fmt_num(total_outliers)} outliers"
-            )
-
-        if not items:
-            items.append("✅ No major issues found")
-        for it in items:
-            st.markdown(f'<div style="font-size:12px;color:var(--muted);padding:4px 0;">{it}</div>',
-                        unsafe_allow_html=True)
-
-    with o_col:
-        st.markdown(f"""
-        <div class="kpi-row" style="margin-top:0;">
-            <div class="kpi-card"><div class="kpi-lbl">Rows</div><div class="kpi-val">{fmt_num(ov['n_rows'])}</div></div>
-            <div class="kpi-card"><div class="kpi-lbl">Columns</div><div class="kpi-val">{ov['n_cols']}</div></div>
-            <div class="kpi-card"><div class="kpi-lbl">Numeric</div>
-                <div class="kpi-val" style="color:var(--accent);">{dc.get('numeric',0)}</div></div>
-            <div class="kpi-card"><div class="kpi-lbl">Categorical</div>
-                <div class="kpi-val" style="color:var(--green);">{dc.get('categorical',0)}</div></div>
-            <div class="kpi-card"><div class="kpi-lbl">Datetime</div>
-                <div class="kpi-val" style="color:var(--yellow);">{dc.get('datetime',0)}</div></div>
-        </div>
-        <div class="kpi-row">
-            <div class="kpi-card"><div class="kpi-lbl">Missing</div>
-                <div class="kpi-val">{fmt_num(ov['missing_cells'])}</div>
-                <div class="kpi-sub">{ov['missing_pct']}% of cells</div></div>
-            <div class="kpi-card"><div class="kpi-lbl">Duplicates</div>
-                <div class="kpi-val">{ov['dup_count']}</div></div>
-            <div class="kpi-card"><div class="kpi-lbl">Memory</div>
-                <div class="kpi-val">{fmt_bytes(ov['memory_bytes'])}</div></div>
-        </div>""", unsafe_allow_html=True)
-
-        targets = meta.get("target_candidates", [])
-        if targets:
-            st.markdown('<div style="font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:14px 0 8px;">🎯 ML Target Candidates</div>',
-                        unsafe_allow_html=True)
-            for t in targets:
-                st.markdown(f'<div style="font-size:13px;padding:5px 0;border-bottom:1px solid rgba(48,54,61,.4);">'
-                            f'<span class="mono">{t["name"]}</span>'
-                            f'<span style="font-size:11px;color:var(--muted);margin-left:8px;">— {t["reason"]}</span></div>',
-                            unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    def render_col_table(col_list):
-        if not col_list:
-            st.markdown('<div style="color:var(--muted);padding:20px;">No columns in this category.</div>',
-                        unsafe_allow_html=True)
-            return
-        rows_html = ""
-        for cm in col_list:
-            badge = DTYPE_BADGE.get(cm["dtype_category"], "")
-            mc    = "var(--red)" if cm["missing_pct"]>30 else "var(--yellow)" if cm["missing_pct"]>5 else "var(--muted)"
-            stats = ""
-            if cm["dtype_category"] == "numeric" and "numeric_stats" in cm:
-                ns = cm["numeric_stats"]
-                stats = f'<div class="mono" style="font-size:11px;color:var(--muted);">min {ns.get("min","—")} · mean {ns.get("mean","—")} · max {ns.get("max","—")}</div>'
-                if ns.get("outliers",0): stats += f'<div style="font-size:11px;color:var(--yellow);">⚠️ {ns["outliers"]} outlier(s)</div>'
-            elif cm["dtype_category"] == "categorical" and "categorical_stats" in cm:
-                top = cm["categorical_stats"].get("top_values",[])
-                if top: stats = f'<div class="mono" style="font-size:11px;color:var(--muted);">Top: {", ".join(v["value"] for v in top[:2])}</div>'
-            samples = ", ".join(str(v) for v in cm.get("sample_values",[])[:3])
-            rows_html += f"""<tr>
-              <td class="mono" style="font-size:12px;font-weight:500;">{cm['name']}</td>
-              <td>{badge}</td>
-              <td style="color:var(--muted);font-size:12px;">{cm['dtype']}</td>
-              <td><span style="color:{mc};">{cm['missing_pct']:.1f}%</span>
-                  <div style="font-size:11px;color:var(--dim);">{cm['missing_count']} cells</div></td>
-              <td class="mono" style="font-size:12px;">{fmt_num(cm['n_unique'])}</td>
-              <td><div class="mono" style="font-size:11px;color:var(--dim);">{samples}</div>{stats}</td>
-              <td style="font-size:12px;color:var(--muted);">{cm['recommendation']}</td>
-            </tr>"""
-        st.markdown(f"""
-        <div class="card" style="overflow:auto;">
-          <table class="col-table"><thead><tr>
-            <th>Column</th><th>Type</th><th>Dtype</th><th>Missing</th>
-            <th>Unique</th><th>Sample / Stats</th><th>Recommendation</th>
-          </tr></thead><tbody>{rows_html}</tbody></table>
-        </div>""", unsafe_allow_html=True)
-
-    t_all, t_num, t_cat, t_iss = st.tabs([
-        f"📋 All ({len(cols)})",
-        f"🔢 Numeric ({dc.get('numeric',0)})",
-        f"🏷️ Categorical ({dc.get('categorical',0)})",
-        "⚠️ Issues",
-    ])
-    with t_all:
-        s = st.text_input("🔍 Filter by column name", placeholder="type to filter…", label_visibility="collapsed")
-        render_col_table([c for c in cols if s.lower() in c["name"].lower()] if s else cols)
-    with t_num:
-        render_col_table([c for c in cols if c["dtype_category"]=="numeric"])
-    with t_cat:
-        render_col_table([c for c in cols if c["dtype_category"]=="categorical"])
-    with t_iss:
-        iss_cols = [c for c in cols if c["missing_pct"]>0
-                    or c.get("numeric_stats",{}).get("outliers",0)>0
-                    or (c["dtype_category"]=="categorical" and c["n_unique"]==ov["n_rows"])]
-        if iss_cols: render_col_table(iss_cols)
-        else: st.markdown('<div style="text-align:center;padding:60px;color:var(--green);font-size:18px;font-weight:600;">✅ No issues detected</div>', unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  CLEANING PAGE  (Phase 4)
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "Cleaning":
-    df      = st.session_state.df
-    meta    = st.session_state.metadata
-    issues  = st.session_state.cleaning_issues
-    ov      = meta["overview"]
-
-    st.markdown(f"""
-    <div class="hero">
-        <div class="hero-t">Data <span>Cleaning</span> Engine</div>
-        <div class="hero-s">Automatically detected issues in <strong>{ov['filename']}</strong>.
-        Review the recommended fixes, adjust if needed, then apply.</div>
-    </div>""", unsafe_allow_html=True)
-
-    sm = issues.get("summary", {})
-
-    # ── Summary bar ──────────────────────────────────────────
-    st.markdown(f"""
-    <div class="kpi-row">
-        <div class="kpi-card">
-            <div class="kpi-lbl">Total Issues</div>
-            <div class="kpi-val" style="color:{'var(--red)' if sm.get('total_issues',0)>5 else 'var(--yellow)'};">
-                {sm.get('total_issues',0)}</div>
-            <div class="kpi-sub">detected automatically</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-lbl">Missing Value Issues</div>
-            <div class="kpi-val" style="color:var(--yellow);">{sm.get('missing_issues',0)}</div>
-            <div class="kpi-sub">columns affected</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-lbl">Duplicate Rows</div>
-            <div class="kpi-val" style="color:{'var(--yellow)' if issues['duplicates']['count']>0 else 'var(--green)'};">
-                {issues['duplicates']['count']}</div>
-            <div class="kpi-sub">{issues['duplicates']['pct']}% of rows</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-lbl">Outlier Issues</div>
-            <div class="kpi-val" style="color:var(--yellow);">{sm.get('outlier_issues',0)}</div>
-            <div class="kpi-sub">numeric columns</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-lbl">Type Issues</div>
-            <div class="kpi-val" style="color:var(--yellow);">{sm.get('type_issues',0)}</div>
-            <div class="kpi-sub">columns to convert</div>
-        </div>
-    </div>""", unsafe_allow_html=True)
-
-    # Already cleaned?
-    if st.session_state.cleaned_df is not None:
-        rep = st.session_state.cleaning_report
-        st.markdown("""
-        <div style="background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3);
-                    border-radius:12px;padding:16px 20px;margin-bottom:24px;
-                    display:flex;align-items:center;gap:12px;">
-            <span style="font-size:22px;">✅</span>
-            <div>
-                <div style="font-size:14px;font-weight:600;color:var(--green);">
-                    Dataset already cleaned</div>
-                <div style="font-size:12px;color:var(--muted);">
-                    Applied at {applied_at} · {total_actions} action(s) taken.
-                    Scroll down to see the report or re-apply with different settings.
-                </div>
-            </div>
-        </div>""".replace("{applied_at}", rep.get("applied_at","—"))
-                   .replace("{total_actions}", str(rep.get("total_actions",0))),
-                   unsafe_allow_html=True)
-
-    if sm.get("total_issues", 0) == 0:
-        st.markdown("""
-        <div style="text-align:center;padding:60px;color:var(--green);font-size:18px;font-weight:600;">
-            ✅ No cleaning issues detected — dataset is ready for EDA!
-        </div>""", unsafe_allow_html=True)
-        st.stop()
-
-    # ── Build the cleaning plan UI ────────────────────────────
-    st.markdown("""
-    <div style="font-size:16px;font-weight:600;margin:24px 0 16px;">
-        ⚙️ Configure Cleaning Plan
-        <span style="font-size:12px;font-weight:400;color:var(--muted);margin-left:10px;">
-        — pre-filled with recommended fixes. Adjust anything before applying.
-        </span>
-    </div>""", unsafe_allow_html=True)
-
-    plan = {"missing": {}, "duplicates": {}, "outliers": {}, "types": {}}
-
-    tabs = st.tabs(["🔴 Missing Values", "🟡 Duplicates", "🟠 Outliers", "🔵 Type Issues"])
-
-    # ── Tab 1: Missing Values ─────────────────────────────────
-    with tabs[0]:
-        missing_list = issues.get("missing", [])
-        if not missing_list:
-            st.markdown('<div style="color:var(--green);padding:20px;">✅ No missing values found.</div>',
-                        unsafe_allow_html=True)
-        else:
-            for item in missing_list:
-                col_name = item["col"]
-                sev_color = "var(--red)" if item["missing_pct"]>30 else "var(--yellow)" if item["missing_pct"]>10 else "var(--muted)"
-                severity  = "HIGH" if item["missing_pct"]>30 else "MEDIUM" if item["missing_pct"]>10 else "LOW"
-
-                st.markdown(f"""
-                <div class="issue-card">
-                    <div class="issue-header">
-                        <span class="issue-col-name">{col_name}</span>
-                        <span class="badge b-{'num' if item['dtype_category']=='numeric' else 'cat'}">{item['dtype_category'].upper()}</span>
-                        <span style="font-size:11px;font-weight:600;color:{sev_color};background:rgba(0,0,0,.2);
-                                     border:1px solid {sev_color};border-radius:4px;padding:2px 7px;">{severity}</span>
-                        <span class="issue-stat" style="margin-left:auto;">
-                            {item['missing_count']} missing · {item['missing_pct']:.1f}%
-                        </span>
-                    </div>
-                </div>""", unsafe_allow_html=True)
-
-                # ── View affected rows in dataset ──────────────
-                with st.expander(f"👁️ View {item['missing_count']} rows where **{col_name}** is missing"):
-                    missing_rows = df[df[col_name].isnull()]
-                    st.markdown(
-                        f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
-                        f'Showing {min(200, len(missing_rows))} of {len(missing_rows)} affected rows '
-                        f'· column <span class="mono" style="color:var(--accent);">{col_name}</span> '
-                        f'highlighted</div>',
-                        unsafe_allow_html=True,
-                    )
-                    # Reorder columns so the affected column is first
-                    cols_ordered = [col_name] + [c for c in df.columns if c != col_name]
-                    st.dataframe(
-                        missing_rows[cols_ordered].head(200),
-                        use_container_width=True,
-                        height=250,
-                    )
-
-                c1, c2 = st.columns([2, 1])
-                with c1:
-                    opts     = item["fix_options"]
-                    opt_lbls = [FIX_LABELS.get(o, o) for o in opts]
-                    rec_idx  = opts.index(item["recommended_fix"]) if item["recommended_fix"] in opts else 0
-                    chosen   = st.selectbox(
-                        f"Fix for **{col_name}**",
-                        options=opt_lbls,
-                        index=rec_idx,
-                        key=f"miss_{col_name}",
-                        label_visibility="collapsed",
-                        help=f"Recommended: {FIX_LABELS.get(item['recommended_fix'], item['recommended_fix'])}"
-                    )
-                    action   = opts[opt_lbls.index(chosen)]
-
-                with c2:
-                    const_val = str(item.get("fill_value","Unknown"))
-                    if action == "fill_constant":
-                        const_val = st.text_input(f"Constant for {col_name}",
-                                                  value=const_val,
-                                                  key=f"const_{col_name}",
-                                                  label_visibility="collapsed")
-
-                plan["missing"][col_name] = {"action": action, "constant": const_val}
-                st.markdown("<hr style='border-color:var(--border);margin:4px 0 12px;'>",
-                            unsafe_allow_html=True)
-
-    # ── Tab 2: Duplicates ─────────────────────────────────────
-    with tabs[1]:
-        dup = issues["duplicates"]
-        if dup["count"] == 0:
-            st.markdown('<div style="color:var(--green);padding:20px;">✅ No duplicate rows found.</div>',
-                        unsafe_allow_html=True)
-            plan["duplicates"]["action"] = "keep"
-        else:
-            st.markdown(f"""
-            <div class="issue-card">
-                <div class="issue-header">
-                    <span class="issue-col-name">Duplicate Rows</span>
-                    <span style="font-size:12px;color:var(--muted);margin-left:auto;">
-                        {dup['count']} duplicates · {dup['pct']:.2f}% of dataset
-                    </span>
-                </div>
-                <div style="font-size:13px;color:var(--muted);">
-                    These are rows where every column value is identical to another row.
-                    Keeping them inflates statistics and model performance metrics.
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-            # ── View duplicate rows in dataset ─────────────────
-            dup_rows = df[df.duplicated(keep=False)]
-            with st.expander(f"👁️ View {dup['count']} duplicate rows in dataset"):
-                st.markdown(
-                    f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
-                    f'Showing {min(200, len(dup_rows))} of {len(dup_rows)} rows that are exact duplicates. '
-                    f'Rows are sorted so duplicates appear side-by-side.</div>',
-                    unsafe_allow_html=True,
-                )
-                st.dataframe(
-                    dup_rows.sort_values(by=list(df.columns)).head(200),
-                    use_container_width=True,
-                    height=250,
-                )
-
-            dup_choice = st.radio(
-                "Duplicate action",
-                options=["Remove Duplicate Rows", "Keep As-Is"],
-                index=0,
-                horizontal=True,
-                label_visibility="collapsed",
-            )
-            plan["duplicates"]["action"] = "drop_duplicates" if "Remove" in dup_choice else "keep"
-
-    # ── Tab 3: Outliers ───────────────────────────────────────
-    with tabs[2]:
-        outlier_list = issues.get("outliers", [])
-        if not outlier_list:
-            st.markdown('<div style="color:var(--green);padding:20px;">✅ No outliers detected.</div>',
-                        unsafe_allow_html=True)
-        else:
-            for item in outlier_list:
-                col_name = item["col"]
-                st.markdown(f"""
-                <div class="issue-card">
-                    <div class="issue-header">
-                        <span class="issue-col-name">{col_name}</span>
-                        <span class="badge b-num">NUMERIC</span>
-                        <span style="font-size:12px;color:var(--muted);margin-left:auto;">
-                            {item['count']} outlier(s) · {item['pct']:.1f}% of values
-                        </span>
-                    </div>
-                    <div style="font-size:12px;color:var(--muted);">
-                        IQR fences: lower <span class="mono">{item['lower_fence']}</span>
-                        · upper <span class="mono">{item['upper_fence']}</span>
-                        &nbsp;|&nbsp; Q1 <span class="mono">{item['q1']}</span>
-                        · Q3 <span class="mono">{item['q3']}</span>
-                    </div>
-                </div>""", unsafe_allow_html=True)
-
-                # ── View outlier rows in dataset ────────────────
-                lower_f = item["lower_fence"]
-                upper_f = item["upper_fence"]
-                outlier_mask = (df[col_name] < lower_f) | (df[col_name] > upper_f)
-                outlier_rows = df[outlier_mask]
-                with st.expander(f"👁️ View {item['count']} outlier rows for **{col_name}**"):
-                    st.markdown(
-                        f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
-                        f'Rows where <span class="mono" style="color:var(--accent);">{col_name}</span> '
-                        f'is outside IQR fences '
-                        f'[<span class="mono">{lower_f}</span>, '
-                        f'<span class="mono">{upper_f}</span>]. '
-                        f'Showing {min(200, len(outlier_rows))} of {len(outlier_rows)} rows. '
-                        f'Column sorted first for easy inspection.</div>',
-                        unsafe_allow_html=True,
-                    )
-                    # Put affected column first, sort by it so extreme values are visible
-                    cols_ordered = [col_name] + [c for c in df.columns if c != col_name]
-                    st.dataframe(
-                        outlier_rows[cols_ordered]
-                        .sort_values(by=col_name, ascending=False)
-                        .head(200),
-                        use_container_width=True,
-                        height=250,
-                    )
-
-                opts     = item["fix_options"]
-                opt_lbls = [FIX_LABELS.get(o, o) for o in opts]
-                rec_idx  = opts.index(item["recommended_fix"]) if item["recommended_fix"] in opts else 0
-                chosen   = st.selectbox(
-                    f"Outlier fix for {col_name}",
-                    options=opt_lbls,
-                    index=rec_idx,
-                    key=f"out_{col_name}",
-                    label_visibility="collapsed",
-                )
-                plan["outliers"][col_name] = {"action": opts[opt_lbls.index(chosen)]}
-                st.markdown("<hr style='border-color:var(--border);margin:4px 0 12px;'>",
-                            unsafe_allow_html=True)
-
-    # ── Tab 4: Type Issues ────────────────────────────────────
-    with tabs[3]:
-        type_list = issues.get("type_issues", [])
-        if not type_list:
-            st.markdown('<div style="color:var(--green);padding:20px;">✅ No data type issues detected.</div>',
-                        unsafe_allow_html=True)
-        else:
-            for item in type_list:
-                col_name = item["col"]
-                st.markdown(f"""
-                <div class="issue-card">
-                    <div class="issue-header">
-                        <span class="issue-col-name">{col_name}</span>
-                        <span class="badge b-txt">OBJECT</span>
-                        <span style="font-size:12px;color:var(--muted);margin-left:auto;">
-                            Suggested → <strong>{item['suggested_dtype']}</strong>
-                        </span>
-                    </div>
-                    <div style="font-size:12px;color:var(--muted);">{item['reason']}</div>
-                </div>""", unsafe_allow_html=True)
-
-                # ── View problematic rows in dataset ────────────
-                with st.expander(f"👁️ View sample rows for **{col_name}** (current type: {item['current_dtype']})"):
-                    st.markdown(
-                        f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
-                        f'Column <span class="mono" style="color:var(--accent);">{col_name}</span> '
-                        f'is stored as <strong>{item["current_dtype"]}</strong> but should be '
-                        f'<strong>{item["suggested_dtype"]}</strong>. '
-                        f'Inspect the values below to confirm conversion is safe.</div>',
-                        unsafe_allow_html=True,
-                    )
-                    cols_ordered = [col_name] + [c for c in df.columns if c != col_name]
-                    # Show non-null rows so the actual values are visible
-                    sample_rows = df[df[col_name].notna()][cols_ordered].head(200)
-                    st.dataframe(sample_rows, use_container_width=True, height=250)
-
-                opts     = [item["action"], "keep"]
-                opt_lbls = [FIX_LABELS.get(o, o) for o in opts]
-                chosen   = st.selectbox(
-                    f"Type fix for {col_name}",
-                    options=opt_lbls,
-                    index=0,
-                    key=f"type_{col_name}",
-                    label_visibility="collapsed",
-                )
-                plan["types"][col_name] = {"action": opts[opt_lbls.index(chosen)]}
-                st.markdown("<hr style='border-color:var(--border);margin:4px 0 12px;'>",
-                            unsafe_allow_html=True)
-
-    # ── Apply button ──────────────────────────────────────────
-    st.markdown("<br>", unsafe_allow_html=True)
-    col_btn, col_info = st.columns([1, 3])
-    with col_btn:
-        apply_clicked = st.button("🧹  Apply Cleaning Plan", type="primary",
-                                  use_container_width=True)
-
-    if apply_clicked:
-        with st.spinner("Applying cleaning plan…"):
-            try:
-                cleaned_df, report = apply_cleaning(df, plan)
-                st.session_state.cleaned_df      = cleaned_df
-                st.session_state.cleaning_report = report
-                time.sleep(0.3)
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Cleaning failed: {e}")
-
-    # ── Cleaning Report (shown after apply) ───────────────────
-    if st.session_state.cleaning_report:
-        rep = st.session_state.cleaning_report
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("""
-        <div style="font-size:16px;font-weight:600;margin-bottom:16px;">
-            📋 Cleaning Report
-        </div>""", unsafe_allow_html=True)
-
-        # Before / After comparison
-        b_col, a_col, r_col, c_col = st.columns(4)
-        metrics = [
-            (b_col, "Rows Before",    rep["rows_before"],  "—",               "var(--muted)"),
-            (a_col, "Rows After",     rep["rows_after"],   "—",               "var(--green)"),
-            (r_col, "Rows Removed",   rep["rows_removed"],
-             f"-{rep['rows_removed']}" if rep["rows_removed"] else "none",    "var(--yellow)"),
-            (c_col, "Actions Taken",  rep["total_actions"],"—",               "var(--accent)"),
-        ]
-        for col_w, lbl, val, delta, color in metrics:
-            with col_w:
-                st.markdown(f"""
-                <div class="compare-box">
-                    <div class="compare-lbl">{lbl}</div>
-                    <div class="compare-val" style="color:{color};">{fmt_num(val)}</div>
-                    <div class="compare-delta" style="color:var(--dim);">{delta}</div>
-                </div>""", unsafe_allow_html=True)
-
-        # Step-by-step log
-        st.markdown("<br>", unsafe_allow_html=True)
-        steps = rep.get("steps", [])
-        if steps:
-            rows_html = "".join(
-                f"""<tr>
-                  <td style="color:var(--accent);">{s['step']}</td>
-                  <td class="mono" style="font-size:12px;">{s['column']}</td>
-                  <td style="color:var(--muted);">{s['action']}</td>
-                  <td style="color:var(--muted);">{s['impact']}</td>
-                  <td style="font-size:18px;">{s['status']}</td>
-                </tr>"""
-                for s in steps
-            )
-            st.markdown(f"""
-            <div class="card" style="overflow:auto;">
-              <table class="report-table">
-                <thead><tr>
-                  <th>Step</th><th>Column</th><th>Action Taken</th>
-                  <th>Impact</th><th>Status</th>
-                </tr></thead>
-                <tbody>{rows_html}</tbody>
-              </table>
-            </div>""", unsafe_allow_html=True)
-
-        # Preview of cleaned dataset
-        st.markdown("<br>", unsafe_allow_html=True)
-        cleaned_df = st.session_state.cleaned_df
-        st.markdown(f"""
-        <div class="prev-card">
-            <div class="prev-hdr">
-                <span class="prev-t">✅ Cleaned Dataset Preview</span>
-                <span class="prev-m">First 10 rows · {len(cleaned_df)} rows · {cleaned_df.shape[1]} columns</span>
-            </div>
-        </div>""", unsafe_allow_html=True)
-        st.dataframe(cleaned_df.head(10), use_container_width=True, height=280)
-
-        # Download cleaned CSV
-        st.markdown("<br>", unsafe_allow_html=True)
-        csv_bytes = cleaned_df.to_csv(index=False).encode("utf-8")
-        dl_name   = (st.session_state.filename or "dataset").replace(".csv","") + "_cleaned.csv"
-        st.download_button(
-            label="⬇️  Download Cleaned CSV",
-            data=csv_bytes,
-            file_name=dl_name,
-            mime="text/csv",
-            use_container_width=False,
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  EDA PAGE  (Phase 5)
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "EDA":
-    import plotly.graph_objects as go
-    import plotly.express as px
-    from plotly.subplots import make_subplots
-
-    # Use cleaned_df if available, else original
-    df_eda   = st.session_state.cleaned_df if st.session_state.cleaned_df is not None else st.session_state.df
-    meta     = st.session_state.metadata
-    ov       = meta["overview"]
-    filename = ov["filename"]
-
-    st.markdown(f"""
-    <div class="hero">
-        <div class="hero-t">Exploratory Data <span>Analysis</span></div>
-        <div class="hero-s">Statistical deep-dive on <strong>{filename}</strong>
-        {"· using cleaned dataset ✅" if st.session_state.cleaned_df is not None else "· tip: run Cleaning first for best results"}</div>
-    </div>""", unsafe_allow_html=True)
-
-    # Run EDA (cached in session state)
-    if st.session_state.eda_result is None:
-        with st.spinner("Running EDA engine…"):
-            st.session_state.eda_result = run_eda(df_eda, meta)
-
-    eda = st.session_state.eda_result
-
-    # Re-run button
-    if st.button("🔄  Re-run EDA", key="_rerun_eda"):
-        st.session_state.eda_result = None
-        st.rerun()
-
-    num_stats   = eda.get("numeric_stats", {})
-    corr        = eda.get("correlation", {})
-    dists       = eda.get("distributions", {})
-    cat_eda     = eda.get("categorical_eda", {})
-    ts_eda      = eda.get("time_series", {})
-    insights    = eda.get("summary_insights", [])
-    num_cols    = list(num_stats.keys())
-    corr_cols   = corr.get("columns", [])
-
-    PLOTLY_LAYOUT = dict(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter, sans-serif", color="#8B949E", size=12),
-        margin=dict(l=10, r=10, t=36, b=10),
-        xaxis=dict(gridcolor="#30363D", linecolor="#30363D", zerolinecolor="#30363D"),
-        yaxis=dict(gridcolor="#30363D", linecolor="#30363D", zerolinecolor="#30363D"),
-    )
-
-    # ── Summary insights ──────────────────────────────────────
-    if insights:
-        st.markdown('<div style="font-size:15px;font-weight:600;margin:8px 0 12px;">💡 Auto-detected Insights</div>',
-                    unsafe_allow_html=True)
-        cols_i = st.columns(min(len(insights), 2))
-        for idx, ins in enumerate(insights):
-            with cols_i[idx % 2]:
-                st.markdown(f"""
-                <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
-                            padding:12px 16px;margin-bottom:10px;font-size:13px;color:var(--muted);
-                            line-height:1.5;">{ins}</div>""", unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── TABS ──────────────────────────────────────────────────
-    tab_labels = ["📐 Statistics", "🔗 Correlation", "📊 Distributions",
-                  "🏷️ Categories", "🔵 Scatter Plots"]
-    if ts_eda:
-        tab_labels.append("📅 Time Series")
-    tabs = st.tabs(tab_labels)
-
-    # ════════════════════════════════
-    #  TAB 1 — STATISTICS
-    # ════════════════════════════════
-    with tabs[0]:
-        if not num_stats:
-            st.markdown('<div style="color:var(--muted);padding:20px;">No numeric columns found.</div>',
-                        unsafe_allow_html=True)
-        else:
-            # Stats summary table
-            stat_keys = ["count","mean","median","std","min","q1","q3","max","skewness","kurtosis"]
-            stat_lbls = ["Count","Mean","Median","Std Dev","Min","Q1","Q3","Max","Skewness","Kurtosis"]
-
-            header_cells = "".join(f"<th>{l}</th>" for l in ["Column"] + stat_lbls)
-            body_rows = ""
-            for col, st_d in num_stats.items():
-                skew  = st_d.get("skewness")
-                skc   = "var(--yellow)" if skew and abs(skew) > 1 else "var(--muted)"
-                cells = f'<td class="mono" style="font-weight:600;color:var(--fg);">{col}</td>'
-                for k in stat_keys:
-                    v = st_d.get(k)
-                    color = skc if k == "skewness" and skew and abs(skew) > 1 else "var(--muted)"
-                    disp  = f"{v:,.4f}" if isinstance(v, float) else (str(v) if v is not None else "—")
-                    cells += f'<td style="color:{color};" class="mono">{disp}</td>'
-                body_rows += f"<tr>{cells}</tr>"
-
-            st.markdown(f"""
-            <div class="card" style="overflow:auto;margin-bottom:20px;">
-              <table class="col-table">
-                <thead><tr>{header_cells}</tr></thead>
-                <tbody>{body_rows}</tbody>
-              </table>
-            </div>""", unsafe_allow_html=True)
-
-            # Skewness / Kurtosis chart
-            st.markdown('<div style="font-size:14px;font-weight:600;margin:20px 0 12px;">Distribution Shape per Column</div>',
-                        unsafe_allow_html=True)
-            c_left, c_right = st.columns(2)
-            with c_left:
-                skew_vals = [num_stats[c].get("skewness", 0) or 0 for c in num_cols]
-                colors    = ["#F85149" if abs(v) > 1 else "#D29922" if abs(v) > 0.5 else "#3FB950"
-                             for v in skew_vals]
-                fig = go.Figure(go.Bar(
-                    x=num_cols, y=skew_vals,
-                    marker_color=colors,
-                    text=[f"{v:.2f}" for v in skew_vals],
-                    textposition="outside",
-                ))
-                fig.add_hline(y=0, line_color="#484F58", line_dash="dash")
-                fig.update_layout(title="Skewness by Column")
-                fig.update_layout(PLOTLY_LAYOUT)
-                st.plotly_chart(fig, use_container_width=True)
-
-            with c_right:
-                kurt_vals = [num_stats[c].get("kurtosis", 0) or 0 for c in num_cols]
-                fig2 = go.Figure(go.Bar(
-                    x=num_cols, y=kurt_vals,
-                    marker_color="#2F81F7",
-                    text=[f"{v:.2f}" for v in kurt_vals],
-                    textposition="outside",
-                ))
-                fig2.add_hline(y=0, line_color="#484F58", line_dash="dash")
-                fig2.update_layout(**PLOTLY_LAYOUT, title="Kurtosis by Column", height=320) # type: ignore
-                st.plotly_chart(fig2, use_container_width=True)
-
-    # ════════════════════════════════
-    #  TAB 2 — CORRELATION
-    # ════════════════════════════════
-    with tabs[1]:
-        if len(corr_cols) < 2:
-            st.markdown('<div style="color:var(--muted);padding:20px;">Need at least 2 numeric columns for correlation.</div>',
-                        unsafe_allow_html=True)
-        else:
-            corr_type = st.radio("Correlation method", ["Pearson", "Spearman"],
-                                 horizontal=True, label_visibility="collapsed")
-            matrix = corr["pearson"] if corr_type == "Pearson" else corr["spearman"]
-
-            # Heatmap
-            fig_h = go.Figure(go.Heatmap(
-                z=matrix,
-                x=corr_cols,
-                y=corr_cols,
-                colorscale=[
-                    [0.0, "#F85149"], [0.5, "#161B22"], [1.0, "#2F81F7"]
-                ],
-                zmin=-1, zmax=1,
-                text=[[f"{v:.2f}" if v is not None else "" for v in row] for row in matrix],
-                texttemplate="%{text}",
-                textfont={"size": 10},
-                hoverongaps=False,
-            ))
-            fig_h.update_layout(
-                **PLOTLY_LAYOUT, # type: ignore
-                title=f"{corr_type} Correlation Heatmap",
-                height=max(350, len(corr_cols) * 45),
-            )
-            st.plotly_chart(fig_h, use_container_width=True)
-
-            # Top correlated pairs table
-            top_pairs = corr.get("top_pairs", [])
-            if top_pairs:
-                st.markdown('<div style="font-size:14px;font-weight:600;margin:20px 0 12px;">Top Correlated Pairs</div>',
-                            unsafe_allow_html=True)
-                pair_rows = ""
-                for p in top_pairs[:8]:
-                    v    = p["pearson"]
-                    bar_w = int(abs(v) * 100)
-                    bar_c = "#2F81F7" if v > 0 else "#F85149"
-                    str_c = "#3FB950" if p["strength"] == "strong" else \
-                            "#D29922" if p["strength"] == "moderate" else "#8B949E"
-                    pair_rows += f"""<tr>
-                      <td class="mono" style="color:var(--fg);">{p['col_a']}</td>
-                      <td class="mono" style="color:var(--fg);">{p['col_b']}</td>
-                      <td><div style="background:{bar_c};width:{bar_w}%;height:6px;border-radius:3px;"></div></td>
-                      <td class="mono" style="color:{bar_c};font-weight:600;">{v:+.4f}</td>
-                      <td style="color:{str_c};font-size:12px;">{p['strength']}</td>
-                      <td style="color:var(--muted);font-size:12px;">{p['direction']}</td>
-                    </tr>"""
-                st.markdown(f"""
-                <div class="card" style="overflow:auto;">
-                  <table class="col-table">
-                    <thead><tr><th>Column A</th><th>Column B</th><th>Strength</th>
-                    <th>r value</th><th>Category</th><th>Direction</th></tr></thead>
-                    <tbody>{pair_rows}</tbody>
-                  </table>
-                </div>""", unsafe_allow_html=True)
-
-    # ════════════════════════════════
-    #  TAB 3 — DISTRIBUTIONS
-    # ════════════════════════════════
-    with tabs[2]:
-        if not dists:
-            st.markdown('<div style="color:var(--muted);padding:20px;">No numeric distributions to show.</div>',
-                        unsafe_allow_html=True)
-        else:
-            selected_col = st.selectbox(
-                "Select column",
-                options=list(dists.keys()),
-                label_visibility="collapsed",
-                key="_dist_col",
-            )
-            dist_data = dists[selected_col]
-            st_d      = num_stats.get(selected_col, {})
-
-            c1, c2, c3, c4 = st.columns(4)
-            for wid, lbl, key, color in [
-                (c1, "Mean",   "mean",   "#2F81F7"),
-                (c2, "Median", "median", "#3FB950"),
-                (c3, "Std Dev","std",    "#D29922"),
-                (c4, "Skew",   "skewness","#F85149" if abs(stv := (st_d.get("skewness") or 0)) > 1 else "#8B949E"),
-            ]:
-                v = st_d.get(key)
-                with wid:
-                    st.markdown(f"""
-                    <div class="kpi-card" style="margin-bottom:16px;">
-                        <div class="kpi-lbl">{lbl}</div>
-                        <div class="kpi-val" style="color:{color};font-size:20px;">
-                            {f"{v:,.4f}" if v is not None else "—"}</div>
-                    </div>""", unsafe_allow_html=True)
-
-            # Histogram
-            fig_dist = go.Figure()
-            fig_dist.add_trace(go.Bar(
-                x=dist_data["bin_centers"],
-                y=dist_data["counts"],
-                name="Frequency",
-                marker_color="#2F81F7",
-                marker_line_width=0,
-                opacity=0.85,
-            ))
-            if st_d.get("mean") is not None:
-                fig_dist.add_vline(x=st_d["mean"],   line_color="#3FB950", line_dash="dash",
-                                   annotation_text="mean",   annotation_position="top right")
-            if st_d.get("median") is not None:
-                fig_dist.add_vline(x=st_d["median"], line_color="#D29922", line_dash="dot",
-                                   annotation_text="median", annotation_position="top left")
-            fig_dist.update_layout(**PLOTLY_LAYOUT, title=f"Distribution of '{selected_col}'", # type: ignore
-                                   height=360, bargap=0.02)
-            st.plotly_chart(fig_dist, use_container_width=True)
-
-            # Box plot
-            fig_box = go.Figure(go.Box(
-                y=df_eda[selected_col].dropna(),
-                name=selected_col,
-                marker_color="#2F81F7",
-                line_color="#2F81F7",
-                boxmean="sd",
-                fillcolor="rgba(47,129,247,0.15)",
-            ))
-            fig_box.update_layout(**PLOTLY_LAYOUT, title=f"Box Plot — '{selected_col}'", height=300) # type: ignore
-            st.plotly_chart(fig_box, use_container_width=True)
-
-            # Skewness explanation
-            skew_v = st_d.get("skewness")
-            kurt_v = st_d.get("kurtosis")
-            if skew_v is not None:
-                skl = st_d.get("skew_label", "")
-                krl = st_d.get("kurt_label", "")
-                st.markdown(f"""
-                <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
-                            padding:14px 18px;font-size:13px;color:var(--muted);margin-top:8px;">
-                    <strong style="color:var(--fg);">Shape summary:</strong>
-                    Distribution is <strong>{skl}</strong> (skew={skew_v:.2f})
-                    and <strong>{krl}</strong> (kurt={kurt_v:.2f}).
-                    {"Consider log-transform before modeling." if abs(skew_v) > 1 else "Shape is suitable for most models."}
-                </div>""", unsafe_allow_html=True)
-
-    # ════════════════════════════════
-    #  TAB 4 — CATEGORIES
-    # ════════════════════════════════
-    with tabs[3]:
-        if not cat_eda:
-            st.markdown('<div style="color:var(--muted);padding:20px;">No categorical columns found.</div>',
-                        unsafe_allow_html=True)
-        else:
-            cat_col = st.selectbox(
-                "Select categorical column",
-                options=list(cat_eda.keys()),
-                label_visibility="collapsed",
-                key="_cat_col",
-            )
-            ced    = cat_eda[cat_col]
-            vc     = ced["value_counts"]
-            labels = [v["label"] for v in vc]
-            counts = [v["count"]  for v in vc]
-            pcts   = [v["pct"]    for v in vc]
-
-            st.markdown(f"""
-            <div class="kpi-row" style="margin-bottom:16px;">
-                <div class="kpi-card">
-                    <div class="kpi-lbl">Unique Values</div>
-                    <div class="kpi-val" style="color:var(--accent);">{ced['n_unique']}</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-lbl">Most Frequent</div>
-                    <div class="kpi-val" style="font-size:16px;color:var(--green);">{labels[0] if labels else "—"}</div>
-                    <div class="kpi-sub">{pcts[0] if pcts else 0}% of rows</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-lbl">Top-5 Coverage</div>
-                    <div class="kpi-val" style="color:var(--yellow);">{round(sum(pcts[:5]),1)}%</div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-            ca, cb = st.columns([3, 2])
-            with ca:
-                fig_bar = go.Figure(go.Bar(
-                    x=counts, y=labels,
-                    orientation="h",
-                    marker_color="#2F81F7",
-                    text=[f"{p}%" for p in pcts],
-                    textposition="outside",
-                ))
-                fig_bar.update_layout(
-                    **PLOTLY_LAYOUT, # type: ignore
-                    title=f"Value Counts — '{cat_col}'",
-                    height=max(300, len(labels) * 32),
-                )
-                fig_bar.update_yaxes(autorange="reversed",
-                                     gridcolor="#30363D",
-                                     linecolor="#30363D",
-                                     zerolinecolor="#30363D")
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-            with cb:
-                if len(labels) <= 10:
-                    fig_pie = go.Figure(go.Pie(
-                        labels=labels, values=counts,
-                        hole=0.45,
-                        marker=dict(colors=px.colors.qualitative.Set2),
-                        textinfo="label+percent",
-                        textfont_size=11,
-                    ))
-                    fig_pie.update_layout(
-                        **PLOTLY_LAYOUT, # type: ignore
-                        title=f"Share — '{cat_col}'",
-                        height=max(300, len(labels) * 32),
-                        showlegend=False,
-                    )
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                else:
-                    st.markdown(f"""
-                    <div style="color:var(--muted);font-size:13px;padding:40px 0;text-align:center;">
-                        Pie chart hidden — {ced['n_unique']} categories is too many.<br>
-                        Showing top 15 in bar chart.
-                    </div>""", unsafe_allow_html=True)
-
-    # ════════════════════════════════
-    #  TAB 5 — SCATTER PLOTS
-    # ════════════════════════════════
-    with tabs[4]:
-        top_pairs = corr.get("top_pairs", [])
-        strong_pairs = [p for p in top_pairs if abs(p["pearson"]) > 0.3]
-
-        if not strong_pairs:
-            st.markdown(
-                '<div style="color:var(--muted);padding:20px;">'
-                'No meaningful correlations found (r > 0.3) to plot scatter charts.</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                '<div style="font-size:13px;color:var(--muted);margin-bottom:16px;">'
-                'Showing scatter plots for the top correlated column pairs. '
-                'Each point is one row in your dataset.</div>',
-                unsafe_allow_html=True,
-            )
-
-            # Pair selector
-            pair_options = [
-                f"{p['col_a']}  ↔  {p['col_b']}  (r={p['pearson']:+.3f})"
-                for p in strong_pairs[:10]
-            ]
-            chosen_label = st.selectbox(
-                "Select column pair",
-                options=pair_options,
-                label_visibility="collapsed",
-                key="_scatter_pair",
-            )
-            chosen_idx  = pair_options.index(chosen_label)
-            chosen_pair = strong_pairs[chosen_idx]
-            col_a, col_b = chosen_pair["col_a"], chosen_pair["col_b"]
-
-            # Optional colour-by categorical column
-            colour_options = ["— none —"] + [
-                c for c in df_eda.columns
-                if c not in (col_a, col_b)
-                and str(df_eda[c].dtype) == "object"
-                and df_eda[c].nunique() <= 15
-            ]
-            colour_col = st.selectbox(
-                "Colour by (optional)",
-                options=colour_options,
-                label_visibility="collapsed",
-                key="_scatter_colour",
-            )
-
-            # Sample up to 5000 rows so the chart stays fast
-            plot_df = df_eda[[col_a, col_b] + (
-                [colour_col] if colour_col != "— none —" else []
-            )].dropna().sample(min(5000, len(df_eda)), random_state=42)
-
-            color_arg = colour_col if colour_col != "— none —" else None
-
-            # Build scatter figure
-            fig_sc = go.Figure()
-            if color_arg:
-                for grp_val, grp_df in plot_df.groupby(color_arg):
-                    fig_sc.add_trace(go.Scatter(
-                        x=grp_df[col_a], y=grp_df[col_b],
-                        mode="markers",
-                        name=str(grp_val),
-                        marker=dict(size=5, opacity=0.65),
-                    ))
-            else:
-                fig_sc.add_trace(go.Scatter(
-                    x=plot_df[col_a], y=plot_df[col_b],
-                    mode="markers",
-                    marker=dict(size=5, color="#2F81F7", opacity=0.55),
-                    name="data",
-                ))
-
-            # Trend line (OLS) using numpy
-            try:
-                valid = plot_df[[col_a, col_b]].dropna()
-                m, b  = np.polyfit(valid[col_a], valid[col_b], 1)
-                x_min, x_max = float(valid[col_a].min()), float(valid[col_a].max())
-                fig_sc.add_trace(go.Scatter(
-                    x=[x_min, x_max],
-                    y=[m * x_min + b, m * x_max + b],
-                    mode="lines",
-                    name=f"Trend (y={m:.3f}x+{b:.3f})",
-                    line=dict(color="#F85149", width=2, dash="dash"),
-                ))
-            except Exception:
-                pass
-
-            r_val   = chosen_pair["pearson"]
-            r_color = "#3FB950" if abs(r_val) > 0.7 else "#D29922" if abs(r_val) > 0.4 else "#8B949E"
-
-            fig_sc.update_layout(
-                **PLOTLY_LAYOUT, # type: ignore
-                title=f"Scatter: {col_a} vs {col_b}",
-                height=430,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            )
-            fig_sc.update_xaxes(title_text=col_a)
-            fig_sc.update_yaxes(title_text=col_b)
-            st.plotly_chart(fig_sc, use_container_width=True)
-
-            # Interpretation card
-            direction  = chosen_pair["direction"]
-            strength   = chosen_pair["strength"]
-            st.markdown(f"""
-            <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
-                        padding:14px 18px;font-size:13px;color:var(--muted);margin-top:4px;
-                        display:flex;align-items:center;gap:16px;">
-                <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;
-                            color:{r_color};">{r_val:+.3f}</div>
-                <div>
-                    <div style="color:var(--fg);font-weight:600;">
-                        {strength.capitalize()} {direction} correlation (Pearson r)
-                    </div>
-                    <div style="margin-top:4px;">
-                        {"As " + col_a + " increases, " + col_b +
-                         (" tends to increase as well." if direction == "positive"
-                          else " tends to decrease.")}
-                        {"This is a strong signal — consider using one as a feature to predict the other."
-                          if strength == "strong" else
-                         "Moderate relationship — useful feature but not dominant."
-                          if strength == "moderate" else
-                         "Weak relationship — likely not the most useful predictor pair."}
-                    </div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-            # Show all pairs as a quick reference table
-            st.markdown('<div style="font-size:14px;font-weight:600;margin:20px 0 10px;">All Correlated Pairs (r > 0.3)</div>',
-                        unsafe_allow_html=True)
-            pair_rows = ""
-            for p in strong_pairs:
-                v     = p["pearson"]
-                bar_w = int(abs(v) * 100)
-                bc    = "#2F81F7" if v > 0 else "#F85149"
-                sc    = "#3FB950" if p["strength"] == "strong" else \
-                        "#D29922" if p["strength"] == "moderate" else "#8B949E"
-                pair_rows += f"""<tr>
-                  <td class="mono" style="color:var(--fg);">{p['col_a']}</td>
-                  <td class="mono" style="color:var(--fg);">{p['col_b']}</td>
-                  <td><div style="background:{bc};width:{bar_w}%;height:6px;border-radius:3px;"></div></td>
-                  <td class="mono" style="color:{bc};font-weight:600;">{v:+.4f}</td>
-                  <td style="color:{sc};font-size:12px;">{p['strength']}</td>
-                  <td style="color:var(--muted);font-size:12px;">{p['direction']}</td>
-                </tr>"""
-            st.markdown(f"""
-            <div class="card" style="overflow:auto;">
-              <table class="col-table">
-                <thead><tr><th>Column A</th><th>Column B</th><th>Bar</th>
-                <th>r value</th><th>Strength</th><th>Direction</th></tr></thead>
-                <tbody>{pair_rows}</tbody>
-              </table>
-            </div>""", unsafe_allow_html=True)
-
-    # ════════════════════════════════
-    #  TAB 6 — TIME SERIES (optional)
-    # ════════════════════════════════
-    if ts_eda and len(tabs) > 5:
-        with tabs[5]:
-            ts_col = st.selectbox("Select date column", options=list(ts_eda.keys()),
-                                  label_visibility="collapsed", key="_ts_col")
-            ts_d   = ts_eda[ts_col]
-            val_col = ts_d["value_col"]
-
-            monthly = ts_d["monthly"]
-            fig_ts  = go.Figure()
-            fig_ts.add_trace(go.Scatter(
-                x=monthly["periods"], y=monthly["values"],
-                name=val_col, mode="lines+markers",
-                line=dict(color="#2F81F7", width=2),
-                marker=dict(size=5),
-            ))
-            fig_ts.add_trace(go.Scatter(
-                x=monthly["periods"], y=monthly["moving_avg"],
-                name="3-period MA", mode="lines",
-                line=dict(color="#3FB950", width=2, dash="dash"),
-            ))
-            fig_ts.update_layout(
-                **PLOTLY_LAYOUT, # type: ignore
-                title=f"Monthly Trend — {val_col} over {ts_col}",
-                height=380,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            )
-            st.plotly_chart(fig_ts, use_container_width=True)
-
-            weekly = ts_d["weekly"]
-            if weekly["periods"]:
-                fig_w = go.Figure(go.Bar(
-                    x=weekly["periods"], y=weekly["values"],
-                    marker_color="#2F81F7", opacity=0.7,
-                ))
-                fig_w.update_layout(**PLOTLY_LAYOUT, # type: ignore
-                                    title=f"Weekly Trend — {val_col}", height=300)
-                st.plotly_chart(fig_w, use_container_width=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  PLACEHOLDER PAGES  (Phases 6–11)
-# ══════════════════════════════════════════════════════════════════════════════
-else:
-    COMING = {
-        "ML Models":          ("🤖", "Phase 7", "Machine Learning Engine",
-                               "AutoML — trains and compares regression, classification, and clustering models."),
-        "Feature Importance": ("⚡", "Phase 7", "Feature Importance",
-                               "Which columns matter most for your prediction target and why."),
-        "AI Insights":        ("💡", "Phase 8", "Insight Generation Engine",
-                               "The LLM reads your analysis and writes plain-English business insights."),
-        "Reports":            ("📄", "Phase 11","Report Generation",
-                               "Auto-generated PDF and PowerPoint ready to hand to a client or manager."),
-        "Chat":               ("💬", "Phase 10","Chat With Dataset",
-                               "Ask questions in plain language — SQL Agent answers from your data."),
-    }
-    icon, phase_tag, title, desc = COMING.get(
-        page, ("🚧", "Coming Soon", page, "This module is under development."))
-    st.markdown(f"""
-    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
-                min-height:60vh;text-align:center;padding:60px 40px;">
-        <div style="font-size:56px;margin-bottom:20px;">{icon}</div>
-        <div style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
-                    color:var(--accent);margin-bottom:10px;">{phase_tag}</div>
-        <div style="font-size:28px;font-weight:700;margin-bottom:12px;">{title}</div>
-        <div style="font-size:15px;color:var(--muted);max-width:480px;line-height:1.6;">{desc}</div>
-        <div style="margin-top:28px;padding:10px 24px;border:1px solid var(--border);
-                    border-radius:8px;font-size:13px;color:var(--dim);">
-            🔨 Coming in the next phase of development
-        </div>
-    </div>""", unsafe_allow_html=True)
+# """
+# upload.py  —  AI Data Analyst Agent
+# Phases completed:
+#   ✅ Phase 1 — Project Setup
+#   ✅ Phase 2 — File Upload / Dashboard page
+#   ✅ Phase 3 — Metadata Engine + Dataset page
+#   ✅ Phase 4 — Data Cleaning Engine + Cleaning page
+#   ✅ Phase 5 — EDA Engine + EDA page
+
+# Run:
+#   streamlit run frontend/uploads/upload.py
+
+# Folder structure expected:
+#   AI_Data_Analyst/
+#   ├── frontend/uploads/upload.py    ← this file
+#   ├── services/metadata_service.py
+#   ├── services/cleaning_service.py
+#   └── requirements.txt
+# """
+# import sys
+# from pathlib import Path
+
+# PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# FRONTEND_DIR = PROJECT_ROOT / "frontend"
+
+# if str(FRONTEND_DIR) not in sys.path:
+#     sys.path.insert(0, str(FRONTEND_DIR))
+# import sys, os, time, copy
+# import pandas as pd
+# import numpy as np
+# import streamlit as st
+# from pages.ml_page import render_ml_page
+# # ── Path setup so both services can be imported ────────────────────────────
+# ROOT     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# SELF_DIR = os.path.dirname(os.path.abspath(__file__))
+# for p in (ROOT, SELF_DIR):
+#     if p not in sys.path:
+#         sys.path.insert(0, p)
+
+# try:
+#     from services.metadata_service import extract_metadata
+# except ImportError:
+#     def extract_metadata(df, filename="dataset.csv"):
+#         return {"overview": {}, "quality": {}, "columns": [], "target_candidates": []}
+
+# try:
+#     from services.cleaning_service import analyze_issues, apply_cleaning
+# except ImportError:
+#     def analyze_issues(df, metadata):
+#         return {"summary": {}, "missing": [], "duplicates": {}, "outliers": [], "type_issues": []}
+#     def apply_cleaning(df, plan):
+#         return df.copy(), {"steps": [], "rows_before": len(df), "rows_after": len(df),
+#                            "rows_removed": 0, "cols_before": df.shape[1],
+#                            "cols_after": df.shape[1], "total_actions": 0,
+#                            "applied_at": ""}
+
+# try:
+#     from services.eda_service import run_eda
+# except ImportError:
+#     def run_eda(df, metadata):
+#         return {"computed_at": "", "numeric_stats": {}, "correlation": {},
+#                 "distributions": {}, "categorical_eda": {}, "time_series": {},
+#                 "summary_insights": []}
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# st.set_page_config(page_title="Data Analyst Agent", page_icon="🤖",
+#                    layout="wide", initial_sidebar_state="expanded")
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# #  GLOBAL CSS
+# # ─────────────────────────────────────────────────────────────────────────────
+# st.markdown("""
+# <style>
+# @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+# :root{
+#   --bg:#0D1117; --card:#161B22; --card-alt:#1C2333; --border:#30363D;
+#   --accent:#2F81F7; --glow:rgba(47,129,247,.15); --dim-a:#1A4A9E;
+#   --green:#3FB950; --yellow:#D29922; --red:#F85149;
+#   --muted:#8B949E; --dim:#484F58; --fg:#E6EDF3;
+# }
+# html,body,[data-testid="stAppViewContainer"]{background:var(--bg)!important;font-family:'Inter',sans-serif!important;color:var(--fg)!important;}
+# [data-testid="stHeader"]{background:transparent!important;}
+# #MainMenu,footer,[data-testid="stToolbar"]{visibility:hidden;}
+
+# /* sidebar */
+# [data-testid="stSidebar"]{background:var(--card)!important;border-right:1px solid var(--border)!important;}
+# [data-testid="stSidebar"]>div:first-child{padding-top:0!important;}
+# .sb-brand{padding:20px 16px 8px;border-bottom:1px solid var(--border);margin-bottom:10px;}
+# .sb-brand-t{font-size:13px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);}
+# .sb-brand-s{font-size:11px;color:var(--dim);margin-top:2px;}
+# .sec-lbl{font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:14px 14px 4px;}
+# .nav-html{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;margin:3px 0;font-size:14px;font-weight:500;color:var(--muted);}
+# .nav-html.active{background:var(--glow);color:var(--accent);border-left:3px solid var(--accent);padding-left:11px;}
+# .nav-html.locked{opacity:.35;}
+# .lock-badge{font-size:10px;color:var(--yellow);background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.25);border-radius:4px;padding:2px 7px;margin-left:auto;}
+
+# /* nav buttons */
+# div.stButton>button{background:transparent!important;color:var(--muted)!important;border:none!important;border-radius:8px!important;font-size:14px!important;font-weight:500!important;padding:10px 14px!important;text-align:left!important;width:100%!important;font-family:'Inter',sans-serif!important;transition:all .2s!important;}
+# div.stButton>button:hover{background:var(--glow)!important;color:var(--accent)!important;}
+
+# /* primary action button */
+# .stButton.primary>button,div[data-testid="stFormSubmitButton"]>button{background:var(--accent)!important;color:#fff!important;border-radius:8px!important;font-weight:600!important;}
+
+# /* cards */
+# .card{background:var(--card);border:1px solid var(--border);border-radius:14px;}
+
+# /* kpi */
+# .kpi-row{display:flex;gap:14px;margin:24px 0;flex-wrap:wrap;}
+# .kpi-card{flex:1;min-width:130px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;}
+# .kpi-lbl{font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;}
+# .kpi-val{font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+# .kpi-sub{font-size:11px;color:var(--dim);margin-top:3px;}
+
+# /* hero */
+# .hero{padding:36px 0 12px;border-bottom:1px solid var(--border);margin-bottom:28px;}
+# .hero-t{font-size:32px;font-weight:700;letter-spacing:-.02em;line-height:1.2;}
+# .hero-t span{color:var(--accent);}
+# .hero-s{font-size:14px;color:var(--muted);margin-top:6px;}
+# .spill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;padding:4px 12px;border-radius:20px;margin-top:14px;}
+# .spill.idle{background:rgba(139,148,158,.1);color:var(--muted);border:1px solid var(--border);}
+# .spill.ready{background:rgba(63,185,80,.1);color:var(--green);border:1px solid rgba(63,185,80,.3);}
+# .sdot{width:7px;height:7px;border-radius:50%;background:currentColor;}
+
+# /* upload */
+# .upload-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:36px 40px;text-align:center;position:relative;overflow:hidden;}
+# .upload-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);}
+# .upload-icon{width:72px;height:72px;margin:0 auto 18px;background:var(--glow);border:1.5px solid var(--dim-a);border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:30px;}
+# .upload-title{font-size:18px;font-weight:600;margin-bottom:6px;}
+# .upload-sub{font-size:13px;color:var(--muted);margin-bottom:22px;line-height:1.5;}
+# .chip-row{display:flex;gap:8px;justify-content:center;margin-bottom:22px;flex-wrap:wrap;}
+# .chip{font-size:11px;font-weight:500;font-family:'JetBrains Mono',monospace;color:var(--accent);background:var(--glow);border:1px solid var(--dim-a);border-radius:6px;padding:3px 10px;}
+
+# /* file uploader */
+# [data-testid="stFileUploaderDropzone"]{background:rgba(47,129,247,.04)!important;border:1.5px dashed var(--dim-a)!important;border-radius:10px!important;}
+# [data-testid="stFileUploaderDropzone"]:hover{background:var(--glow)!important;border-color:var(--accent)!important;}
+
+# /* unlock banner */
+# .ubanner{background:linear-gradient(135deg,rgba(63,185,80,.08),rgba(47,129,247,.08));border:1px solid rgba(63,185,80,.25);border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:14px;margin:16px 0;}
+
+# /* preview card */
+# .prev-card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;}
+# .prev-hdr{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--card-alt);}
+# .prev-t{font-size:13px;font-weight:600;}
+# .prev-m{font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;}
+
+# /* badges */
+# .badge{font-size:10px;font-weight:600;padding:2px 8px;border-radius:5px;font-family:'JetBrains Mono',monospace;}
+# .b-num{background:rgba(47,129,247,.12);color:var(--accent);}
+# .b-cat{background:rgba(63,185,80,.12);color:var(--green);}
+# .b-dat{background:rgba(210,153,34,.12);color:var(--yellow);}
+# .b-txt{background:rgba(139,148,158,.1);color:var(--muted);}
+
+# /* column table */
+# .col-table{width:100%;border-collapse:collapse;font-size:13px;}
+# .col-table th{text-align:left;font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:10px 14px;border-bottom:1px solid var(--border);background:var(--card-alt);}
+# .col-table td{padding:10px 14px;border-bottom:1px solid rgba(48,54,61,.5);vertical-align:top;}
+# .col-table tr:last-child td{border-bottom:none;}
+# .col-table tr:hover td{background:rgba(47,129,247,.04);}
+# .mono{font-family:'JetBrains Mono',monospace;}
+
+# /* ── CLEANING PAGE ── */
+# .issue-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:12px;transition:border-color .2s;}
+# .issue-card:hover{border-color:var(--accent);}
+# .issue-header{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+# .issue-col-name{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;color:var(--fg);}
+# .issue-stat{font-size:12px;color:var(--muted);}
+# .severity-high{color:var(--red);}
+# .severity-med{color:var(--yellow);}
+# .severity-low{color:var(--green);}
+
+# /* report table */
+# .report-table{width:100%;border-collapse:collapse;font-size:13px;}
+# .report-table th{text-align:left;font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:10px 14px;border-bottom:1px solid var(--border);background:var(--card-alt);}
+# .report-table td{padding:10px 14px;border-bottom:1px solid rgba(48,54,61,.5);vertical-align:middle;}
+# .report-table tr:last-child td{border-bottom:none;}
+
+# /* before/after compare */
+# .compare-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;text-align:center;}
+# .compare-val{font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;margin:8px 0;}
+# .compare-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);}
+# .compare-delta{font-size:13px;margin-top:4px;}
+
+# /* progress */
+# [data-testid="stProgress"]>div>div{background:var(--accent)!important;}
+
+# /* tabs */
+# [data-testid="stTabs"] button{color:var(--muted)!important;font-family:'Inter',sans-serif!important;}
+# [data-testid="stTabs"] button[aria-selected="true"]{color:var(--accent)!important;border-bottom-color:var(--accent)!important;}
+
+# /* select box */
+# [data-testid="stSelectbox"] label{color:var(--muted)!important;font-size:12px!important;}
+
+# /* scrollbar */
+# ::-webkit-scrollbar{width:6px;height:6px;}
+# ::-webkit-scrollbar-track{background:transparent;}
+# ::-webkit-scrollbar-thumb{background:var(--border);border-radius:10px;}
+# </style>
+# """, unsafe_allow_html=True)
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# #  SESSION STATE
+# # ─────────────────────────────────────────────────────────────────────────────
+# _defaults = {
+#     "df":            None,   # original uploaded df
+#     "cleaned_df":    None,   # after Phase 4
+#     "filename":      None,
+#     "metadata":      None,   # from Phase 3
+#     "cleaning_issues": None, # from Phase 4 analyze_issues
+#     "cleaning_report": None, # from Phase 4 apply_cleaning
+#     "eda_result":    None,   # from Phase 5 run_eda
+#     "active_page":   "Dashboard",
+# }
+# for k, v in _defaults.items():
+#     if k not in st.session_state:
+#         st.session_state[k] = v
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# #  HELPERS
+# # ─────────────────────────────────────────────────────────────────────────────
+# def fmt_num(n):
+#     if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+#     if n >= 1_000:     return f"{n/1_000:.1f}K"
+#     return str(n)
+
+# def fmt_bytes(b):
+#     if b < 1024: return f"{b} B"
+#     if b < 1024**2: return f"{b/1024:.1f} KB"
+#     return f"{b/1024**2:.1f} MB"
+
+# DTYPE_BADGE = {
+#     "numeric":     '<span class="badge b-num">NUM</span>',
+#     "categorical": '<span class="badge b-cat">CAT</span>',
+#     "datetime":    '<span class="badge b-dat">DATE</span>',
+#     "text":        '<span class="badge b-txt">TEXT</span>',
+# }
+# GRADE_COLOR = {"A":"#3FB950","B":"#2F81F7","C":"#D29922","D":"#F85149","F":"#F85149"}
+
+# FIX_LABELS = {
+#     "fill_median":    "Fill with Median",
+#     "fill_mean":      "Fill with Mean",
+#     "fill_mode":      "Fill with Most Frequent",
+#     "fill_constant":  "Fill with Constant Value",
+#     "drop_column":    "Drop Entire Column",
+#     "drop_rows":      "Drop Rows with Missing",
+#     "winsorize":      "Winsorize (Clip to IQR Fences)",
+#     "keep":           "Keep As-Is",
+#     "drop_duplicates":"Remove Duplicate Rows",
+#     "convert_numeric":"Convert to Numeric",
+#     "convert_datetime":"Convert to Datetime",
+# }
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# #  SIDEBAR
+# # ─────────────────────────────────────────────────────────────────────────────
+# locked = st.session_state.df is None
+# NAV = [
+#     ("Dashboard",          "🏠", False),
+#     ("Dataset",            "📂", locked),
+#     ("Cleaning",           "✂️", locked),
+#     ("EDA",                "📊", locked),
+#     ("ML Models",          "🤖", locked),
+#     ("Feature Importance", "⚡", locked),
+#     ("AI Insights",        "💡", locked),
+#     ("Reports",            "📄", locked),
+#     ("Chat",               "💬", locked),
+# ]
+
+# with st.sidebar:
+#     st.markdown("""
+#     <div class="sb-brand">
+#         <div class="sb-brand-t">⚡ Data Analyst Agent</div>
+#         <div class="sb-brand-s">AI-Powered Analysis Platform</div>
+#     </div>
+#     <div class="sec-lbl">Navigation</div>
+#     """, unsafe_allow_html=True)
+
+#     for label, icon, is_locked in NAV:
+#         if is_locked:
+#             st.markdown(f"""
+#             <div class="nav-html locked">
+#                 <span>{icon}</span><span>{label}</span>
+#                 <span class="lock-badge">🔒 Upload first</span>
+#             </div>""", unsafe_allow_html=True)
+#         else:
+#             active = st.session_state.active_page == label
+#             # st.markdown(f"""
+#             # <div class="nav-html {'active' if active else ''}">
+#             #     <span>{icon}</span><span>{label}</span>
+#             # </div>""", unsafe_allow_html=True)
+#             if st.button(f"{icon}  {label}", key=f"_nav_{label}"):
+#                 st.session_state.active_page = label
+#                 st.rerun()
+
+#     st.markdown('<div class="sec-lbl" style="margin-top:10px;">System</div>',
+#                 unsafe_allow_html=True)
+#     st.markdown('<div class="nav-html"><span>⚙️</span><span>Settings</span></div>',
+#                 unsafe_allow_html=True)
+
+# # ─────────────────────────────────────────────────────────────────────────────
+# #  PAGE ROUTER
+# # ─────────────────────────────────────────────────────────────────────────────
+# page = st.session_state.active_page
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# #  DASHBOARD
+# # ══════════════════════════════════════════════════════════════════════════════
+# if page == "Dashboard":
+#     status_cls  = "ready" if not locked else "idle"
+#     status_text = "Dataset loaded — all modules unlocked" if not locked else "Waiting for dataset upload"
+#     st.markdown(f"""
+#     <div class="hero">
+#         <div class="hero-t">Data <span>Analyst</span> Agent</div>
+#         <div class="hero-s">Upload a CSV to unlock automated cleaning, EDA, ML, insights, and reports.</div>
+#         <div class="spill {status_cls}"><span class="sdot"></span>{status_text}</div>
+#     </div>""", unsafe_allow_html=True)
+
+#     if locked:
+#         st.markdown("""
+#         <div class="upload-card">
+#             <div class="upload-icon">📁</div>
+#             <div class="upload-title">Upload your dataset to get started</div>
+#             <div class="upload-sub">The agent will automatically clean it, analyse it,
+#                 train models, and generate a full report.</div>
+#             <div class="chip-row">
+#                 <span class="chip">.csv</span>
+#                 <span class="chip">UTF-8</span>
+#                 <span class="chip">comma-separated</span>
+#                 <span class="chip">up to 200 MB</span>
+#             </div>
+#         </div>""", unsafe_allow_html=True)
+
+#         uploaded = st.file_uploader("Choose CSV", type=["csv"], label_visibility="collapsed")
+#         if uploaded:
+#             bar = st.progress(0, text="Reading file…")
+#             try:
+#                 for pct in range(0, 81, 20):
+#                     time.sleep(0.05)
+#                     bar.progress(pct, text=f"Loading… {pct}%")
+#                 df = pd.read_csv(uploaded)
+#                 bar.progress(85, text="Extracting metadata…")
+#                 meta   = extract_metadata(df, uploaded.name)
+#                 bar.progress(95, text="Analysing cleaning issues…")
+#                 issues = analyze_issues(df, meta)
+#                 bar.progress(100, text="✅ Done!")
+#                 st.session_state.df              = df
+#                 st.session_state.filename        = uploaded.name
+#                 st.session_state.metadata        = meta
+#                 st.session_state.cleaning_issues = issues
+#                 time.sleep(0.3)
+#                 st.rerun()
+#             except Exception as e:
+#                 bar.empty()
+#                 st.error(f"❌ Could not read file: {e}")
+#     else:
+#         df   = st.session_state.df
+#         meta = st.session_state.metadata
+#         ov   = meta["overview"]
+#         ql   = meta["quality"]
+#         dc   = ov.get("dtype_counts", {})
+
+#         st.markdown(f"""
+#         <div class="ubanner">
+#             <div style="font-size:24px;">🎉</div>
+#             <div>
+#                 <div style="font-size:14px;font-weight:600;color:var(--green);">All modules unlocked</div>
+#                 <div style="font-size:12px;color:var(--muted);"><strong>{ov['filename']}</strong>
+#                 loaded — use the sidebar to navigate.</div>
+#             </div>
+#         </div>""", unsafe_allow_html=True)
+
+#         issues = st.session_state.cleaning_issues or {}
+#         sm     = issues.get("summary", {})
+#         total_issues = sm.get("total_issues", 0)
+
+#         st.markdown(f"""
+#         <div class="kpi-row">
+#             <div class="kpi-card">
+#                 <div class="kpi-lbl">Rows</div>
+#                 <div class="kpi-val">{fmt_num(ov['n_rows'])}</div>
+#                 <div class="kpi-sub">records</div>
+#             </div>
+#             <div class="kpi-card">
+#                 <div class="kpi-lbl">Columns</div>
+#                 <div class="kpi-val">{ov['n_cols']}</div>
+#                 <div class="kpi-sub">{dc.get('numeric',0)} num · {dc.get('categorical',0)} cat</div>
+#             </div>
+#             <div class="kpi-card">
+#                 <div class="kpi-lbl">Missing Cells</div>
+#                 <div class="kpi-val" style="color:{'var(--yellow)' if ov['missing_cells']>0 else 'var(--green)'};">
+#                     {fmt_num(ov['missing_cells'])}</div>
+#                 <div class="kpi-sub">{ov['missing_pct']}% of all cells</div>
+#             </div>
+#             <div class="kpi-card">
+#                 <div class="kpi-lbl">Duplicate Rows</div>
+#                 <div class="kpi-val" style="color:{'var(--yellow)' if ov['dup_count']>0 else 'var(--green)'};">
+#                     {ov['dup_count']}</div>
+#                 <div class="kpi-sub">{"needs cleaning" if ov['dup_count']>0 else "✅ none found"}</div>
+#             </div>
+#             <div class="kpi-card">
+#                 <div class="kpi-lbl">Data Quality</div>
+#                 <div class="kpi-val" style="color:{GRADE_COLOR.get(ql['grade'],'#fff')};">
+#                     {ql['score']}</div>
+#                 <div class="kpi-sub">Grade {ql['grade']} / 100</div>
+#             </div>
+#             <div class="kpi-card">
+#                 <div class="kpi-lbl">Cleaning Issues</div>
+#                 <div class="kpi-val" style="color:{'var(--red)' if total_issues>5 else 'var(--yellow)' if total_issues>0 else 'var(--green)'};">
+#                     {total_issues}</div>
+#                 <div class="kpi-sub">{"→ go to Cleaning" if total_issues>0 else "✅ dataset looks clean"}</div>
+#             </div>
+#         </div>""", unsafe_allow_html=True)
+
+#         st.markdown(f"""
+#         <div class="prev-card">
+#             <div class="prev-hdr">
+#                 <span class="prev-t">📋 Dataset Preview</span>
+#                 <span class="prev-m">First 10 rows · {ov['n_rows']} total</span>
+#             </div>
+#         </div>""", unsafe_allow_html=True)
+#         st.dataframe(df.head(10), use_container_width=True, height=300)
+
+#         with st.expander("⬆️  Upload a different file"):
+#             nf = st.file_uploader("Replace", type=["csv"], label_visibility="collapsed", key="_rep")
+#             if nf:
+#                 try:
+#                     df2 = pd.read_csv(nf)
+#                     m2  = extract_metadata(df2, nf.name)
+#                     i2  = analyze_issues(df2, m2)
+#                     st.session_state.update({"df": df2, "filename": nf.name, "metadata": m2,
+#                                              "cleaning_issues": i2, "cleaned_df": None,
+#                                              "cleaning_report": None})
+#                     st.success(f"✅ Replaced with **{nf.name}**")
+#                     time.sleep(0.4)
+#                     st.rerun()
+#                 except Exception as e:
+#                     st.error(f"❌ {e}")
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# #  DATASET PAGE  (Phase 3)
+# # ══════════════════════════════════════════════════════════════════════════════
+# elif page == "Dataset":
+#     meta = st.session_state.metadata
+#     df   = st.session_state.df
+#     ov   = meta["overview"]
+#     ql   = meta["quality"]
+#     cols = meta["columns"]
+#     dc   = ov.get("dtype_counts", {})
+
+#     st.markdown(f"""
+#     <div class="hero">
+#         <div class="hero-t">Dataset <span>Overview</span></div>
+#         <div class="hero-s">Deep column-level metadata for <strong>{ov['filename']}</strong>
+#         · extracted at {ov['extracted_at']}</div>
+#     </div>""", unsafe_allow_html=True)
+
+#     q_col, o_col = st.columns([1, 3], gap="large")
+#     with q_col:
+#         gc = GRADE_COLOR.get(ql["grade"], "#fff")
+#         st.markdown(f"""
+#         <div class="card" style="padding:24px 20px;text-align:center;">
+#             <div style="font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+#                         color:var(--muted);margin-bottom:14px;">DATA QUALITY SCORE</div>
+#             <div style="font-size:60px;font-weight:700;font-family:'JetBrains Mono',monospace;
+#                         color:{gc};line-height:1;">{ql['score']}</div>
+#             <div style="font-size:12px;color:var(--muted);margin-top:4px;">out of 100</div>
+#             <div style="font-size:26px;font-weight:700;color:{gc};margin-top:8px;">Grade {ql['grade']}</div>
+#         </div>""", unsafe_allow_html=True)
+#         st.progress(int(ql["score"]) / 100)
+#         issues_q = ql.get("issues", {})
+#         items = []
+
+#         if issues_q.get("missing_cells",0):
+#             items.append(
+#                 f"⚠️ {fmt_num(issues_q['missing_cells'])} missing cells"
+#             )
+
+#         if issues_q.get("duplicate_rows",0):
+#             items.append(
+#                 f"⚠️ {issues_q['duplicate_rows']} duplicate rows"
+#             )
+
+#         if issues_q.get("high_missing_cols"):
+#             items.append(
+#                 f"⚠️ {len(issues_q['high_missing_cols'])} columns >30% missing"
+#             )
+
+#         outlier_columns = sum(
+#             1
+#             for c in cols
+#             if c.get("outliers",0) > 0
+#         )
+
+#         total_outliers = sum(
+#             c.get("outliers",0)
+#             for c in cols
+#         )
+
+#         if outlier_columns:
+#             items.append(
+#                 f"⚠️ {outlier_columns} numeric columns contain {fmt_num(total_outliers)} outliers"
+#             )
+
+#         if not items:
+#             items.append("✅ No major issues found")
+#         for it in items:
+#             st.markdown(f'<div style="font-size:12px;color:var(--muted);padding:4px 0;">{it}</div>',
+#                         unsafe_allow_html=True)
+
+#     with o_col:
+#         st.markdown(f"""
+#         <div class="kpi-row" style="margin-top:0;">
+#             <div class="kpi-card"><div class="kpi-lbl">Rows</div><div class="kpi-val">{fmt_num(ov['n_rows'])}</div></div>
+#             <div class="kpi-card"><div class="kpi-lbl">Columns</div><div class="kpi-val">{ov['n_cols']}</div></div>
+#             <div class="kpi-card"><div class="kpi-lbl">Numeric</div>
+#                 <div class="kpi-val" style="color:var(--accent);">{dc.get('numeric',0)}</div></div>
+#             <div class="kpi-card"><div class="kpi-lbl">Categorical</div>
+#                 <div class="kpi-val" style="color:var(--green);">{dc.get('categorical',0)}</div></div>
+#             <div class="kpi-card"><div class="kpi-lbl">Datetime</div>
+#                 <div class="kpi-val" style="color:var(--yellow);">{dc.get('datetime',0)}</div></div>
+#         </div>
+#         <div class="kpi-row">
+#             <div class="kpi-card"><div class="kpi-lbl">Missing</div>
+#                 <div class="kpi-val">{fmt_num(ov['missing_cells'])}</div>
+#                 <div class="kpi-sub">{ov['missing_pct']}% of cells</div></div>
+#             <div class="kpi-card"><div class="kpi-lbl">Duplicates</div>
+#                 <div class="kpi-val">{ov['dup_count']}</div></div>
+#             <div class="kpi-card"><div class="kpi-lbl">Memory</div>
+#                 <div class="kpi-val">{fmt_bytes(ov['memory_bytes'])}</div></div>
+#         </div>""", unsafe_allow_html=True)
+
+#         targets = meta.get("target_candidates", [])
+#         if targets:
+#             st.markdown('<div style="font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:14px 0 8px;">🎯 ML Target Candidates</div>',
+#                         unsafe_allow_html=True)
+#             for t in targets:
+#                 st.markdown(f'<div style="font-size:13px;padding:5px 0;border-bottom:1px solid rgba(48,54,61,.4);">'
+#                             f'<span class="mono">{t["name"]}</span>'
+#                             f'<span style="font-size:11px;color:var(--muted);margin-left:8px;">— {t["reason"]}</span></div>',
+#                             unsafe_allow_html=True)
+
+#     st.markdown("<br>", unsafe_allow_html=True)
+
+#     def render_col_table(col_list):
+#         if not col_list:
+#             st.markdown('<div style="color:var(--muted);padding:20px;">No columns in this category.</div>',
+#                         unsafe_allow_html=True)
+#             return
+#         rows_html = ""
+#         for cm in col_list:
+#             badge = DTYPE_BADGE.get(cm["dtype_category"], "")
+#             mc    = "var(--red)" if cm["missing_pct"]>30 else "var(--yellow)" if cm["missing_pct"]>5 else "var(--muted)"
+#             stats = ""
+#             if cm["dtype_category"] == "numeric" and "numeric_stats" in cm:
+#                 ns = cm["numeric_stats"]
+#                 stats = f'<div class="mono" style="font-size:11px;color:var(--muted);">min {ns.get("min","—")} · mean {ns.get("mean","—")} · max {ns.get("max","—")}</div>'
+#                 if ns.get("outliers",0): stats += f'<div style="font-size:11px;color:var(--yellow);">⚠️ {ns["outliers"]} outlier(s)</div>'
+#             elif cm["dtype_category"] == "categorical" and "categorical_stats" in cm:
+#                 top = cm["categorical_stats"].get("top_values",[])
+#                 if top: stats = f'<div class="mono" style="font-size:11px;color:var(--muted);">Top: {", ".join(v["value"] for v in top[:2])}</div>'
+#             samples = ", ".join(str(v) for v in cm.get("sample_values",[])[:3])
+#             rows_html += f"""<tr>
+#               <td class="mono" style="font-size:12px;font-weight:500;">{cm['name']}</td>
+#               <td>{badge}</td>
+#               <td style="color:var(--muted);font-size:12px;">{cm['dtype']}</td>
+#               <td><span style="color:{mc};">{cm['missing_pct']:.1f}%</span>
+#                   <div style="font-size:11px;color:var(--dim);">{cm['missing_count']} cells</div></td>
+#               <td class="mono" style="font-size:12px;">{fmt_num(cm['n_unique'])}</td>
+#               <td><div class="mono" style="font-size:11px;color:var(--dim);">{samples}</div>{stats}</td>
+#               <td style="font-size:12px;color:var(--muted);">{cm['recommendation']}</td>
+#             </tr>"""
+#         st.markdown(f"""
+#         <div class="card" style="overflow:auto;">
+#           <table class="col-table"><thead><tr>
+#             <th>Column</th><th>Type</th><th>Dtype</th><th>Missing</th>
+#             <th>Unique</th><th>Sample / Stats</th><th>Recommendation</th>
+#           </tr></thead><tbody>{rows_html}</tbody></table>
+#         </div>""", unsafe_allow_html=True)
+
+#     t_all, t_num, t_cat, t_iss = st.tabs([
+#         f"📋 All ({len(cols)})",
+#         f"🔢 Numeric ({dc.get('numeric',0)})",
+#         f"🏷️ Categorical ({dc.get('categorical',0)})",
+#         "⚠️ Issues",
+#     ])
+#     with t_all:
+#         s = st.text_input("🔍 Filter by column name", placeholder="type to filter…", label_visibility="collapsed")
+#         render_col_table([c for c in cols if s.lower() in c["name"].lower()] if s else cols)
+#     with t_num:
+#         render_col_table([c for c in cols if c["dtype_category"]=="numeric"])
+#     with t_cat:
+#         render_col_table([c for c in cols if c["dtype_category"]=="categorical"])
+#     with t_iss:
+#         iss_cols = [c for c in cols if c["missing_pct"]>0
+#                     or c.get("numeric_stats",{}).get("outliers",0)>0
+#                     or (c["dtype_category"]=="categorical" and c["n_unique"]==ov["n_rows"])]
+#         if iss_cols: render_col_table(iss_cols)
+#         else: st.markdown('<div style="text-align:center;padding:60px;color:var(--green);font-size:18px;font-weight:600;">✅ No issues detected</div>', unsafe_allow_html=True)
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# #  CLEANING PAGE  (Phase 4)
+# # ══════════════════════════════════════════════════════════════════════════════
+# elif page == "Cleaning":
+#     df      = st.session_state.df
+#     meta    = st.session_state.metadata
+#     issues  = st.session_state.cleaning_issues
+#     ov      = meta["overview"]
+
+#     st.markdown(f"""
+#     <div class="hero">
+#         <div class="hero-t">Data <span>Cleaning</span> Engine</div>
+#         <div class="hero-s">Automatically detected issues in <strong>{ov['filename']}</strong>.
+#         Review the recommended fixes, adjust if needed, then apply.</div>
+#     </div>""", unsafe_allow_html=True)
+
+#     sm = issues.get("summary", {})
+
+#     # ── Summary bar ──────────────────────────────────────────
+#     st.markdown(f"""
+#     <div class="kpi-row">
+#         <div class="kpi-card">
+#             <div class="kpi-lbl">Total Issues</div>
+#             <div class="kpi-val" style="color:{'var(--red)' if sm.get('total_issues',0)>5 else 'var(--yellow)'};">
+#                 {sm.get('total_issues',0)}</div>
+#             <div class="kpi-sub">detected automatically</div>
+#         </div>
+#         <div class="kpi-card">
+#             <div class="kpi-lbl">Missing Value Issues</div>
+#             <div class="kpi-val" style="color:var(--yellow);">{sm.get('missing_issues',0)}</div>
+#             <div class="kpi-sub">columns affected</div>
+#         </div>
+#         <div class="kpi-card">
+#             <div class="kpi-lbl">Duplicate Rows</div>
+#             <div class="kpi-val" style="color:{'var(--yellow)' if issues['duplicates']['count']>0 else 'var(--green)'};">
+#                 {issues['duplicates']['count']}</div>
+#             <div class="kpi-sub">{issues['duplicates']['pct']}% of rows</div>
+#         </div>
+#         <div class="kpi-card">
+#             <div class="kpi-lbl">Outlier Issues</div>
+#             <div class="kpi-val" style="color:var(--yellow);">{sm.get('outlier_issues',0)}</div>
+#             <div class="kpi-sub">numeric columns</div>
+#         </div>
+#         <div class="kpi-card">
+#             <div class="kpi-lbl">Type Issues</div>
+#             <div class="kpi-val" style="color:var(--yellow);">{sm.get('type_issues',0)}</div>
+#             <div class="kpi-sub">columns to convert</div>
+#         </div>
+#     </div>""", unsafe_allow_html=True)
+
+#     # Already cleaned?
+#     if st.session_state.cleaned_df is not None:
+#         rep = st.session_state.cleaning_report
+#         st.markdown("""
+#         <div style="background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3);
+#                     border-radius:12px;padding:16px 20px;margin-bottom:24px;
+#                     display:flex;align-items:center;gap:12px;">
+#             <span style="font-size:22px;">✅</span>
+#             <div>
+#                 <div style="font-size:14px;font-weight:600;color:var(--green);">
+#                     Dataset already cleaned</div>
+#                 <div style="font-size:12px;color:var(--muted);">
+#                     Applied at {applied_at} · {total_actions} action(s) taken.
+#                     Scroll down to see the report or re-apply with different settings.
+#                 </div>
+#             </div>
+#         </div>""".replace("{applied_at}", rep.get("applied_at","—"))
+#                    .replace("{total_actions}", str(rep.get("total_actions",0))),
+#                    unsafe_allow_html=True)
+
+#     if sm.get("total_issues", 0) == 0:
+#         st.markdown("""
+#         <div style="text-align:center;padding:60px;color:var(--green);font-size:18px;font-weight:600;">
+#             ✅ No cleaning issues detected — dataset is ready for EDA!
+#         </div>""", unsafe_allow_html=True)
+#         st.stop()
+
+#     # ── Build the cleaning plan UI ────────────────────────────
+#     st.markdown("""
+#     <div style="font-size:16px;font-weight:600;margin:24px 0 16px;">
+#         ⚙️ Configure Cleaning Plan
+#         <span style="font-size:12px;font-weight:400;color:var(--muted);margin-left:10px;">
+#         — pre-filled with recommended fixes. Adjust anything before applying.
+#         </span>
+#     </div>""", unsafe_allow_html=True)
+
+#     plan = {"missing": {}, "duplicates": {}, "outliers": {}, "types": {}}
+
+#     tabs = st.tabs(["🔴 Missing Values", "🟡 Duplicates", "🟠 Outliers", "🔵 Type Issues"])
+
+#     # ── Tab 1: Missing Values ─────────────────────────────────
+#     with tabs[0]:
+#         missing_list = issues.get("missing", [])
+#         if not missing_list:
+#             st.markdown('<div style="color:var(--green);padding:20px;">✅ No missing values found.</div>',
+#                         unsafe_allow_html=True)
+#         else:
+#             for item in missing_list:
+#                 col_name = item["col"]
+#                 sev_color = "var(--red)" if item["missing_pct"]>30 else "var(--yellow)" if item["missing_pct"]>10 else "var(--muted)"
+#                 severity  = "HIGH" if item["missing_pct"]>30 else "MEDIUM" if item["missing_pct"]>10 else "LOW"
+
+#                 st.markdown(f"""
+#                 <div class="issue-card">
+#                     <div class="issue-header">
+#                         <span class="issue-col-name">{col_name}</span>
+#                         <span class="badge b-{'num' if item['dtype_category']=='numeric' else 'cat'}">{item['dtype_category'].upper()}</span>
+#                         <span style="font-size:11px;font-weight:600;color:{sev_color};background:rgba(0,0,0,.2);
+#                                      border:1px solid {sev_color};border-radius:4px;padding:2px 7px;">{severity}</span>
+#                         <span class="issue-stat" style="margin-left:auto;">
+#                             {item['missing_count']} missing · {item['missing_pct']:.1f}%
+#                         </span>
+#                     </div>
+#                 </div>""", unsafe_allow_html=True)
+
+#                 # ── View affected rows in dataset ──────────────
+#                 with st.expander(f"👁️ View {item['missing_count']} rows where **{col_name}** is missing"):
+#                     missing_rows = df[df[col_name].isnull()]
+#                     st.markdown(
+#                         f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
+#                         f'Showing {min(200, len(missing_rows))} of {len(missing_rows)} affected rows '
+#                         f'· column <span class="mono" style="color:var(--accent);">{col_name}</span> '
+#                         f'highlighted</div>',
+#                         unsafe_allow_html=True,
+#                     )
+#                     # Reorder columns so the affected column is first
+#                     cols_ordered = [col_name] + [c for c in df.columns if c != col_name]
+#                     st.dataframe(
+#                         missing_rows[cols_ordered].head(200),
+#                         use_container_width=True,
+#                         height=250,
+#                     )
+
+#                 c1, c2 = st.columns([2, 1])
+#                 with c1:
+#                     opts     = item["fix_options"]
+#                     opt_lbls = [FIX_LABELS.get(o, o) for o in opts]
+#                     rec_idx  = opts.index(item["recommended_fix"]) if item["recommended_fix"] in opts else 0
+#                     chosen   = st.selectbox(
+#                         f"Fix for **{col_name}**",
+#                         options=opt_lbls,
+#                         index=rec_idx,
+#                         key=f"miss_{col_name}",
+#                         label_visibility="collapsed",
+#                         help=f"Recommended: {FIX_LABELS.get(item['recommended_fix'], item['recommended_fix'])}"
+#                     )
+#                     action   = opts[opt_lbls.index(chosen)]
+
+#                 with c2:
+#                     const_val = str(item.get("fill_value","Unknown"))
+#                     if action == "fill_constant":
+#                         const_val = st.text_input(f"Constant for {col_name}",
+#                                                   value=const_val,
+#                                                   key=f"const_{col_name}",
+#                                                   label_visibility="collapsed")
+
+#                 plan["missing"][col_name] = {"action": action, "constant": const_val}
+#                 st.markdown("<hr style='border-color:var(--border);margin:4px 0 12px;'>",
+#                             unsafe_allow_html=True)
+
+#     # ── Tab 2: Duplicates ─────────────────────────────────────
+#     with tabs[1]:
+#         dup = issues["duplicates"]
+#         if dup["count"] == 0:
+#             st.markdown('<div style="color:var(--green);padding:20px;">✅ No duplicate rows found.</div>',
+#                         unsafe_allow_html=True)
+#             plan["duplicates"]["action"] = "keep"
+#         else:
+#             st.markdown(f"""
+#             <div class="issue-card">
+#                 <div class="issue-header">
+#                     <span class="issue-col-name">Duplicate Rows</span>
+#                     <span style="font-size:12px;color:var(--muted);margin-left:auto;">
+#                         {dup['count']} duplicates · {dup['pct']:.2f}% of dataset
+#                     </span>
+#                 </div>
+#                 <div style="font-size:13px;color:var(--muted);">
+#                     These are rows where every column value is identical to another row.
+#                     Keeping them inflates statistics and model performance metrics.
+#                 </div>
+#             </div>""", unsafe_allow_html=True)
+
+#             # ── View duplicate rows in dataset ─────────────────
+#             dup_rows = df[df.duplicated(keep=False)]
+#             with st.expander(f"👁️ View {dup['count']} duplicate rows in dataset"):
+#                 st.markdown(
+#                     f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
+#                     f'Showing {min(200, len(dup_rows))} of {len(dup_rows)} rows that are exact duplicates. '
+#                     f'Rows are sorted so duplicates appear side-by-side.</div>',
+#                     unsafe_allow_html=True,
+#                 )
+#                 st.dataframe(
+#                     dup_rows.sort_values(by=list(df.columns)).head(200),
+#                     use_container_width=True,
+#                     height=250,
+#                 )
+
+#             dup_choice = st.radio(
+#                 "Duplicate action",
+#                 options=["Remove Duplicate Rows", "Keep As-Is"],
+#                 index=0,
+#                 horizontal=True,
+#                 label_visibility="collapsed",
+#             )
+#             plan["duplicates"]["action"] = "drop_duplicates" if "Remove" in dup_choice else "keep"
+
+#     # ── Tab 3: Outliers ───────────────────────────────────────
+#     with tabs[2]:
+#         outlier_list = issues.get("outliers", [])
+#         if not outlier_list:
+#             st.markdown('<div style="color:var(--green);padding:20px;">✅ No outliers detected.</div>',
+#                         unsafe_allow_html=True)
+#         else:
+#             for item in outlier_list:
+#                 col_name = item["col"]
+#                 st.markdown(f"""
+#                 <div class="issue-card">
+#                     <div class="issue-header">
+#                         <span class="issue-col-name">{col_name}</span>
+#                         <span class="badge b-num">NUMERIC</span>
+#                         <span style="font-size:12px;color:var(--muted);margin-left:auto;">
+#                             {item['count']} outlier(s) · {item['pct']:.1f}% of values
+#                         </span>
+#                     </div>
+#                     <div style="font-size:12px;color:var(--muted);">
+#                         IQR fences: lower <span class="mono">{item['lower_fence']}</span>
+#                         · upper <span class="mono">{item['upper_fence']}</span>
+#                         &nbsp;|&nbsp; Q1 <span class="mono">{item['q1']}</span>
+#                         · Q3 <span class="mono">{item['q3']}</span>
+#                     </div>
+#                 </div>""", unsafe_allow_html=True)
+
+#                 # ── View outlier rows in dataset ────────────────
+#                 lower_f = item["lower_fence"]
+#                 upper_f = item["upper_fence"]
+#                 outlier_mask = (df[col_name] < lower_f) | (df[col_name] > upper_f)
+#                 outlier_rows = df[outlier_mask]
+#                 with st.expander(f"👁️ View {item['count']} outlier rows for **{col_name}**"):
+#                     st.markdown(
+#                         f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
+#                         f'Rows where <span class="mono" style="color:var(--accent);">{col_name}</span> '
+#                         f'is outside IQR fences '
+#                         f'[<span class="mono">{lower_f}</span>, '
+#                         f'<span class="mono">{upper_f}</span>]. '
+#                         f'Showing {min(200, len(outlier_rows))} of {len(outlier_rows)} rows. '
+#                         f'Column sorted first for easy inspection.</div>',
+#                         unsafe_allow_html=True,
+#                     )
+#                     # Put affected column first, sort by it so extreme values are visible
+#                     cols_ordered = [col_name] + [c for c in df.columns if c != col_name]
+#                     st.dataframe(
+#                         outlier_rows[cols_ordered]
+#                         .sort_values(by=col_name, ascending=False)
+#                         .head(200),
+#                         use_container_width=True,
+#                         height=250,
+#                     )
+
+#                 opts     = item["fix_options"]
+#                 opt_lbls = [FIX_LABELS.get(o, o) for o in opts]
+#                 rec_idx  = opts.index(item["recommended_fix"]) if item["recommended_fix"] in opts else 0
+#                 chosen   = st.selectbox(
+#                     f"Outlier fix for {col_name}",
+#                     options=opt_lbls,
+#                     index=rec_idx,
+#                     key=f"out_{col_name}",
+#                     label_visibility="collapsed",
+#                 )
+#                 plan["outliers"][col_name] = {"action": opts[opt_lbls.index(chosen)]}
+#                 st.markdown("<hr style='border-color:var(--border);margin:4px 0 12px;'>",
+#                             unsafe_allow_html=True)
+
+#     # ── Tab 4: Type Issues ────────────────────────────────────
+#     with tabs[3]:
+#         type_list = issues.get("type_issues", [])
+#         if not type_list:
+#             st.markdown('<div style="color:var(--green);padding:20px;">✅ No data type issues detected.</div>',
+#                         unsafe_allow_html=True)
+#         else:
+#             for item in type_list:
+#                 col_name = item["col"]
+#                 st.markdown(f"""
+#                 <div class="issue-card">
+#                     <div class="issue-header">
+#                         <span class="issue-col-name">{col_name}</span>
+#                         <span class="badge b-txt">OBJECT</span>
+#                         <span style="font-size:12px;color:var(--muted);margin-left:auto;">
+#                             Suggested → <strong>{item['suggested_dtype']}</strong>
+#                         </span>
+#                     </div>
+#                     <div style="font-size:12px;color:var(--muted);">{item['reason']}</div>
+#                 </div>""", unsafe_allow_html=True)
+
+#                 # ── View problematic rows in dataset ────────────
+#                 with st.expander(f"👁️ View sample rows for **{col_name}** (current type: {item['current_dtype']})"):
+#                     st.markdown(
+#                         f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">'
+#                         f'Column <span class="mono" style="color:var(--accent);">{col_name}</span> '
+#                         f'is stored as <strong>{item["current_dtype"]}</strong> but should be '
+#                         f'<strong>{item["suggested_dtype"]}</strong>. '
+#                         f'Inspect the values below to confirm conversion is safe.</div>',
+#                         unsafe_allow_html=True,
+#                     )
+#                     cols_ordered = [col_name] + [c for c in df.columns if c != col_name]
+#                     # Show non-null rows so the actual values are visible
+#                     sample_rows = df[df[col_name].notna()][cols_ordered].head(200)
+#                     st.dataframe(sample_rows, use_container_width=True, height=250)
+
+#                 opts     = [item["action"], "keep"]
+#                 opt_lbls = [FIX_LABELS.get(o, o) for o in opts]
+#                 chosen   = st.selectbox(
+#                     f"Type fix for {col_name}",
+#                     options=opt_lbls,
+#                     index=0,
+#                     key=f"type_{col_name}",
+#                     label_visibility="collapsed",
+#                 )
+#                 plan["types"][col_name] = {"action": opts[opt_lbls.index(chosen)]}
+#                 st.markdown("<hr style='border-color:var(--border);margin:4px 0 12px;'>",
+#                             unsafe_allow_html=True)
+
+#     # ── Apply button ──────────────────────────────────────────
+#     st.markdown("<br>", unsafe_allow_html=True)
+#     col_btn, col_info = st.columns([1, 3])
+#     with col_btn:
+#         apply_clicked = st.button("🧹  Apply Cleaning Plan", type="primary",
+#                                   use_container_width=True)
+
+#     if apply_clicked:
+#         with st.spinner("Applying cleaning plan…"):
+#             try:
+#                 cleaned_df, report = apply_cleaning(df, plan)
+#                 st.session_state.cleaned_df      = cleaned_df
+#                 st.session_state.cleaning_report = report
+#                 time.sleep(0.3)
+#                 st.rerun()
+#             except Exception as e:
+#                 st.error(f"❌ Cleaning failed: {e}")
+
+#     # ── Cleaning Report (shown after apply) ───────────────────
+#     if st.session_state.cleaning_report:
+#         rep = st.session_state.cleaning_report
+
+#         st.markdown("<br>", unsafe_allow_html=True)
+#         st.markdown("""
+#         <div style="font-size:16px;font-weight:600;margin-bottom:16px;">
+#             📋 Cleaning Report
+#         </div>""", unsafe_allow_html=True)
+
+#         # Before / After comparison
+#         b_col, a_col, r_col, c_col = st.columns(4)
+#         metrics = [
+#             (b_col, "Rows Before",    rep["rows_before"],  "—",               "var(--muted)"),
+#             (a_col, "Rows After",     rep["rows_after"],   "—",               "var(--green)"),
+#             (r_col, "Rows Removed",   rep["rows_removed"],
+#              f"-{rep['rows_removed']}" if rep["rows_removed"] else "none",    "var(--yellow)"),
+#             (c_col, "Actions Taken",  rep["total_actions"],"—",               "var(--accent)"),
+#         ]
+#         for col_w, lbl, val, delta, color in metrics:
+#             with col_w:
+#                 st.markdown(f"""
+#                 <div class="compare-box">
+#                     <div class="compare-lbl">{lbl}</div>
+#                     <div class="compare-val" style="color:{color};">{fmt_num(val)}</div>
+#                     <div class="compare-delta" style="color:var(--dim);">{delta}</div>
+#                 </div>""", unsafe_allow_html=True)
+
+#         # Step-by-step log
+#         st.markdown("<br>", unsafe_allow_html=True)
+#         steps = rep.get("steps", [])
+#         if steps:
+#             rows_html = "".join(
+#                 f"""<tr>
+#                   <td style="color:var(--accent);">{s['step']}</td>
+#                   <td class="mono" style="font-size:12px;">{s['column']}</td>
+#                   <td style="color:var(--muted);">{s['action']}</td>
+#                   <td style="color:var(--muted);">{s['impact']}</td>
+#                   <td style="font-size:18px;">{s['status']}</td>
+#                 </tr>"""
+#                 for s in steps
+#             )
+#             st.markdown(f"""
+#             <div class="card" style="overflow:auto;">
+#               <table class="report-table">
+#                 <thead><tr>
+#                   <th>Step</th><th>Column</th><th>Action Taken</th>
+#                   <th>Impact</th><th>Status</th>
+#                 </tr></thead>
+#                 <tbody>{rows_html}</tbody>
+#               </table>
+#             </div>""", unsafe_allow_html=True)
+
+#         # Preview of cleaned dataset
+#         st.markdown("<br>", unsafe_allow_html=True)
+#         cleaned_df = st.session_state.cleaned_df
+#         st.markdown(f"""
+#         <div class="prev-card">
+#             <div class="prev-hdr">
+#                 <span class="prev-t">✅ Cleaned Dataset Preview</span>
+#                 <span class="prev-m">First 10 rows · {len(cleaned_df)} rows · {cleaned_df.shape[1]} columns</span>
+#             </div>
+#         </div>""", unsafe_allow_html=True)
+#         st.dataframe(cleaned_df.head(10), use_container_width=True, height=280)
+
+#         # Download cleaned CSV
+#         st.markdown("<br>", unsafe_allow_html=True)
+#         csv_bytes = cleaned_df.to_csv(index=False).encode("utf-8")
+#         dl_name   = (st.session_state.filename or "dataset").replace(".csv","") + "_cleaned.csv"
+#         st.download_button(
+#             label="⬇️  Download Cleaned CSV",
+#             data=csv_bytes,
+#             file_name=dl_name,
+#             mime="text/csv",
+#             use_container_width=False,
+#         )
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# #  EDA PAGE  (Phase 5)
+# # ══════════════════════════════════════════════════════════════════════════════
+# elif page == "EDA":
+#     import plotly.graph_objects as go
+#     import plotly.express as px
+#     from plotly.subplots import make_subplots
+
+#     # Use cleaned_df if available, else original
+#     df_eda   = st.session_state.cleaned_df if st.session_state.cleaned_df is not None else st.session_state.df
+#     meta     = st.session_state.metadata
+#     ov       = meta["overview"]
+#     filename = ov["filename"]
+
+#     st.markdown(f"""
+#     <div class="hero">
+#         <div class="hero-t">Exploratory Data <span>Analysis</span></div>
+#         <div class="hero-s">Statistical deep-dive on <strong>{filename}</strong>
+#         {"· using cleaned dataset ✅" if st.session_state.cleaned_df is not None else "· tip: run Cleaning first for best results"}</div>
+#     </div>""", unsafe_allow_html=True)
+
+#     # Run EDA (cached in session state)
+#     if st.session_state.eda_result is None:
+#         with st.spinner("Running EDA engine…"):
+#             st.session_state.eda_result = run_eda(df_eda, meta)
+
+#     eda = st.session_state.eda_result
+
+#     # Re-run button
+#     if st.button("🔄  Re-run EDA", key="_rerun_eda"):
+#         st.session_state.eda_result = None
+#         st.rerun()
+
+#     num_stats   = eda.get("numeric_stats", {})
+#     corr        = eda.get("correlation", {})
+#     dists       = eda.get("distributions", {})
+#     cat_eda     = eda.get("categorical_eda", {})
+#     ts_eda      = eda.get("time_series", {})
+#     insights    = eda.get("summary_insights", [])
+#     num_cols    = list(num_stats.keys())
+#     corr_cols   = corr.get("columns", [])
+
+#     PLOTLY_LAYOUT = dict(
+#         paper_bgcolor="rgba(0,0,0,0)",
+#         plot_bgcolor="rgba(0,0,0,0)",
+#         font=dict(family="Inter, sans-serif", color="#8B949E", size=12),
+#         margin=dict(l=10, r=10, t=36, b=10),
+#         xaxis=dict(gridcolor="#30363D", linecolor="#30363D", zerolinecolor="#30363D"),
+#         yaxis=dict(gridcolor="#30363D", linecolor="#30363D", zerolinecolor="#30363D"),
+#     )
+
+#     # ── Summary insights ──────────────────────────────────────
+#     if insights:
+#         st.markdown('<div style="font-size:15px;font-weight:600;margin:8px 0 12px;">💡 Auto-detected Insights</div>',
+#                     unsafe_allow_html=True)
+#         cols_i = st.columns(min(len(insights), 2))
+#         for idx, ins in enumerate(insights):
+#             with cols_i[idx % 2]:
+#                 st.markdown(f"""
+#                 <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+#                             padding:12px 16px;margin-bottom:10px;font-size:13px;color:var(--muted);
+#                             line-height:1.5;">{ins}</div>""", unsafe_allow_html=True)
+#         st.markdown("<br>", unsafe_allow_html=True)
+
+#     # ── TABS ──────────────────────────────────────────────────
+#     tab_labels = ["📐 Statistics", "🔗 Correlation", "📊 Distributions",
+#                   "🏷️ Categories", "🔵 Scatter Plots"]
+#     if ts_eda:
+#         tab_labels.append("📅 Time Series")
+#     tabs = st.tabs(tab_labels)
+
+#     # ════════════════════════════════
+#     #  TAB 1 — STATISTICS
+#     # ════════════════════════════════
+#     with tabs[0]:
+#         if not num_stats:
+#             st.markdown('<div style="color:var(--muted);padding:20px;">No numeric columns found.</div>',
+#                         unsafe_allow_html=True)
+#         else:
+#             # Stats summary table
+#             stat_keys = ["count","mean","median","std","min","q1","q3","max","skewness","kurtosis"]
+#             stat_lbls = ["Count","Mean","Median","Std Dev","Min","Q1","Q3","Max","Skewness","Kurtosis"]
+
+#             header_cells = "".join(f"<th>{l}</th>" for l in ["Column"] + stat_lbls)
+#             body_rows = ""
+#             for col, st_d in num_stats.items():
+#                 skew  = st_d.get("skewness")
+#                 skc   = "var(--yellow)" if skew and abs(skew) > 1 else "var(--muted)"
+#                 cells = f'<td class="mono" style="font-weight:600;color:var(--fg);">{col}</td>'
+#                 for k in stat_keys:
+#                     v = st_d.get(k)
+#                     color = skc if k == "skewness" and skew and abs(skew) > 1 else "var(--muted)"
+#                     disp  = f"{v:,.4f}" if isinstance(v, float) else (str(v) if v is not None else "—")
+#                     cells += f'<td style="color:{color};" class="mono">{disp}</td>'
+#                 body_rows += f"<tr>{cells}</tr>"
+
+#             st.markdown(f"""
+#             <div class="card" style="overflow:auto;margin-bottom:20px;">
+#               <table class="col-table">
+#                 <thead><tr>{header_cells}</tr></thead>
+#                 <tbody>{body_rows}</tbody>
+#               </table>
+#             </div>""", unsafe_allow_html=True)
+
+#             # Skewness / Kurtosis chart
+#             st.markdown('<div style="font-size:14px;font-weight:600;margin:20px 0 12px;">Distribution Shape per Column</div>',
+#                         unsafe_allow_html=True)
+#             c_left, c_right = st.columns(2)
+#             with c_left:
+#                 skew_vals = [num_stats[c].get("skewness", 0) or 0 for c in num_cols]
+#                 colors    = ["#F85149" if abs(v) > 1 else "#D29922" if abs(v) > 0.5 else "#3FB950"
+#                              for v in skew_vals]
+#                 fig = go.Figure(go.Bar(
+#                     x=num_cols, y=skew_vals,
+#                     marker_color=colors,
+#                     text=[f"{v:.2f}" for v in skew_vals],
+#                     textposition="outside",
+#                 ))
+#                 fig.add_hline(y=0, line_color="#484F58", line_dash="dash")
+#                 fig.update_layout(title="Skewness by Column")
+#                 fig.update_layout(PLOTLY_LAYOUT)
+#                 st.plotly_chart(fig, use_container_width=True)
+
+#             with c_right:
+#                 kurt_vals = [num_stats[c].get("kurtosis", 0) or 0 for c in num_cols]
+#                 fig2 = go.Figure(go.Bar(
+#                     x=num_cols, y=kurt_vals,
+#                     marker_color="#2F81F7",
+#                     text=[f"{v:.2f}" for v in kurt_vals],
+#                     textposition="outside",
+#                 ))
+#                 fig2.add_hline(y=0, line_color="#484F58", line_dash="dash")
+#                 fig2.update_layout(**PLOTLY_LAYOUT, title="Kurtosis by Column", height=320) # type: ignore
+#                 st.plotly_chart(fig2, use_container_width=True)
+
+#     # ════════════════════════════════
+#     #  TAB 2 — CORRELATION
+#     # ════════════════════════════════
+#     with tabs[1]:
+#         if len(corr_cols) < 2:
+#             st.markdown('<div style="color:var(--muted);padding:20px;">Need at least 2 numeric columns for correlation.</div>',
+#                         unsafe_allow_html=True)
+#         else:
+#             corr_type = st.radio("Correlation method", ["Pearson", "Spearman"],
+#                                  horizontal=True, label_visibility="collapsed")
+#             matrix = corr["pearson"] if corr_type == "Pearson" else corr["spearman"]
+
+#             # Heatmap
+#             fig_h = go.Figure(go.Heatmap(
+#                 z=matrix,
+#                 x=corr_cols,
+#                 y=corr_cols,
+#                 colorscale=[
+#                     [0.0, "#F85149"], [0.5, "#161B22"], [1.0, "#2F81F7"]
+#                 ],
+#                 zmin=-1, zmax=1,
+#                 text=[[f"{v:.2f}" if v is not None else "" for v in row] for row in matrix],
+#                 texttemplate="%{text}",
+#                 textfont={"size": 10},
+#                 hoverongaps=False,
+#             ))
+#             fig_h.update_layout(
+#                 **PLOTLY_LAYOUT, # type: ignore
+#                 title=f"{corr_type} Correlation Heatmap",
+#                 height=max(350, len(corr_cols) * 45),
+#             )
+#             st.plotly_chart(fig_h, use_container_width=True)
+
+#             # Top correlated pairs table
+#             top_pairs = corr.get("top_pairs", [])
+#             if top_pairs:
+#                 st.markdown('<div style="font-size:14px;font-weight:600;margin:20px 0 12px;">Top Correlated Pairs</div>',
+#                             unsafe_allow_html=True)
+#                 pair_rows = ""
+#                 for p in top_pairs[:8]:
+#                     v    = p["pearson"]
+#                     bar_w = int(abs(v) * 100)
+#                     bar_c = "#2F81F7" if v > 0 else "#F85149"
+#                     str_c = "#3FB950" if p["strength"] == "strong" else \
+#                             "#D29922" if p["strength"] == "moderate" else "#8B949E"
+#                     pair_rows += f"""<tr>
+#                       <td class="mono" style="color:var(--fg);">{p['col_a']}</td>
+#                       <td class="mono" style="color:var(--fg);">{p['col_b']}</td>
+#                       <td><div style="background:{bar_c};width:{bar_w}%;height:6px;border-radius:3px;"></div></td>
+#                       <td class="mono" style="color:{bar_c};font-weight:600;">{v:+.4f}</td>
+#                       <td style="color:{str_c};font-size:12px;">{p['strength']}</td>
+#                       <td style="color:var(--muted);font-size:12px;">{p['direction']}</td>
+#                     </tr>"""
+#                 st.markdown(f"""
+#                 <div class="card" style="overflow:auto;">
+#                   <table class="col-table">
+#                     <thead><tr><th>Column A</th><th>Column B</th><th>Strength</th>
+#                     <th>r value</th><th>Category</th><th>Direction</th></tr></thead>
+#                     <tbody>{pair_rows}</tbody>
+#                   </table>
+#                 </div>""", unsafe_allow_html=True)
+
+#     # ════════════════════════════════
+#     #  TAB 3 — DISTRIBUTIONS
+#     # ════════════════════════════════
+#     with tabs[2]:
+#         if not dists:
+#             st.markdown('<div style="color:var(--muted);padding:20px;">No numeric distributions to show.</div>',
+#                         unsafe_allow_html=True)
+#         else:
+#             selected_col = st.selectbox(
+#                 "Select column",
+#                 options=list(dists.keys()),
+#                 label_visibility="collapsed",
+#                 key="_dist_col",
+#             )
+#             dist_data = dists[selected_col]
+#             st_d      = num_stats.get(selected_col, {})
+
+#             c1, c2, c3, c4 = st.columns(4)
+#             for wid, lbl, key, color in [
+#                 (c1, "Mean",   "mean",   "#2F81F7"),
+#                 (c2, "Median", "median", "#3FB950"),
+#                 (c3, "Std Dev","std",    "#D29922"),
+#                 (c4, "Skew",   "skewness","#F85149" if abs(stv := (st_d.get("skewness") or 0)) > 1 else "#8B949E"),
+#             ]:
+#                 v = st_d.get(key)
+#                 with wid:
+#                     st.markdown(f"""
+#                     <div class="kpi-card" style="margin-bottom:16px;">
+#                         <div class="kpi-lbl">{lbl}</div>
+#                         <div class="kpi-val" style="color:{color};font-size:20px;">
+#                             {f"{v:,.4f}" if v is not None else "—"}</div>
+#                     </div>""", unsafe_allow_html=True)
+
+#             # Histogram
+#             fig_dist = go.Figure()
+#             fig_dist.add_trace(go.Bar(
+#                 x=dist_data["bin_centers"],
+#                 y=dist_data["counts"],
+#                 name="Frequency",
+#                 marker_color="#2F81F7",
+#                 marker_line_width=0,
+#                 opacity=0.85,
+#             ))
+#             if st_d.get("mean") is not None:
+#                 fig_dist.add_vline(x=st_d["mean"],   line_color="#3FB950", line_dash="dash",
+#                                    annotation_text="mean",   annotation_position="top right")
+#             if st_d.get("median") is not None:
+#                 fig_dist.add_vline(x=st_d["median"], line_color="#D29922", line_dash="dot",
+#                                    annotation_text="median", annotation_position="top left")
+#             fig_dist.update_layout(**PLOTLY_LAYOUT, title=f"Distribution of '{selected_col}'", # type: ignore
+#                                    height=360, bargap=0.02)
+#             st.plotly_chart(fig_dist, use_container_width=True)
+
+#             # Box plot
+#             fig_box = go.Figure(go.Box(
+#                 y=df_eda[selected_col].dropna(),
+#                 name=selected_col,
+#                 marker_color="#2F81F7",
+#                 line_color="#2F81F7",
+#                 boxmean="sd",
+#                 fillcolor="rgba(47,129,247,0.15)",
+#             ))
+#             fig_box.update_layout(**PLOTLY_LAYOUT, title=f"Box Plot — '{selected_col}'", height=300) # type: ignore
+#             st.plotly_chart(fig_box, use_container_width=True)
+
+#             # Skewness explanation
+#             skew_v = st_d.get("skewness")
+#             kurt_v = st_d.get("kurtosis")
+#             if skew_v is not None:
+#                 skl = st_d.get("skew_label", "")
+#                 krl = st_d.get("kurt_label", "")
+#                 st.markdown(f"""
+#                 <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+#                             padding:14px 18px;font-size:13px;color:var(--muted);margin-top:8px;">
+#                     <strong style="color:var(--fg);">Shape summary:</strong>
+#                     Distribution is <strong>{skl}</strong> (skew={skew_v:.2f})
+#                     and <strong>{krl}</strong> (kurt={kurt_v:.2f}).
+#                     {"Consider log-transform before modeling." if abs(skew_v) > 1 else "Shape is suitable for most models."}
+#                 </div>""", unsafe_allow_html=True)
+
+#     # ════════════════════════════════
+#     #  TAB 4 — CATEGORIES
+#     # ════════════════════════════════
+#     with tabs[3]:
+#         if not cat_eda:
+#             st.markdown('<div style="color:var(--muted);padding:20px;">No categorical columns found.</div>',
+#                         unsafe_allow_html=True)
+#         else:
+#             cat_col = st.selectbox(
+#                 "Select categorical column",
+#                 options=list(cat_eda.keys()),
+#                 label_visibility="collapsed",
+#                 key="_cat_col",
+#             )
+#             ced    = cat_eda[cat_col]
+#             vc     = ced["value_counts"]
+#             labels = [v["label"] for v in vc]
+#             counts = [v["count"]  for v in vc]
+#             pcts   = [v["pct"]    for v in vc]
+
+#             st.markdown(f"""
+#             <div class="kpi-row" style="margin-bottom:16px;">
+#                 <div class="kpi-card">
+#                     <div class="kpi-lbl">Unique Values</div>
+#                     <div class="kpi-val" style="color:var(--accent);">{ced['n_unique']}</div>
+#                 </div>
+#                 <div class="kpi-card">
+#                     <div class="kpi-lbl">Most Frequent</div>
+#                     <div class="kpi-val" style="font-size:16px;color:var(--green);">{labels[0] if labels else "—"}</div>
+#                     <div class="kpi-sub">{pcts[0] if pcts else 0}% of rows</div>
+#                 </div>
+#                 <div class="kpi-card">
+#                     <div class="kpi-lbl">Top-5 Coverage</div>
+#                     <div class="kpi-val" style="color:var(--yellow);">{round(sum(pcts[:5]),1)}%</div>
+#                 </div>
+#             </div>""", unsafe_allow_html=True)
+
+#             ca, cb = st.columns([3, 2])
+#             with ca:
+#                 fig_bar = go.Figure(go.Bar(
+#                     x=counts, y=labels,
+#                     orientation="h",
+#                     marker_color="#2F81F7",
+#                     text=[f"{p}%" for p in pcts],
+#                     textposition="outside",
+#                 ))
+#                 fig_bar.update_layout(
+#                     **PLOTLY_LAYOUT, # type: ignore
+#                     title=f"Value Counts — '{cat_col}'",
+#                     height=max(300, len(labels) * 32),
+#                 )
+#                 fig_bar.update_yaxes(autorange="reversed",
+#                                      gridcolor="#30363D",
+#                                      linecolor="#30363D",
+#                                      zerolinecolor="#30363D")
+#                 st.plotly_chart(fig_bar, use_container_width=True)
+
+#             with cb:
+#                 if len(labels) <= 10:
+#                     fig_pie = go.Figure(go.Pie(
+#                         labels=labels, values=counts,
+#                         hole=0.45,
+#                         marker=dict(colors=px.colors.qualitative.Set2),
+#                         textinfo="label+percent",
+#                         textfont_size=11,
+#                     ))
+#                     fig_pie.update_layout(
+#                         **PLOTLY_LAYOUT, # type: ignore
+#                         title=f"Share — '{cat_col}'",
+#                         height=max(300, len(labels) * 32),
+#                         showlegend=False,
+#                     )
+#                     st.plotly_chart(fig_pie, use_container_width=True)
+#                 else:
+#                     st.markdown(f"""
+#                     <div style="color:var(--muted);font-size:13px;padding:40px 0;text-align:center;">
+#                         Pie chart hidden — {ced['n_unique']} categories is too many.<br>
+#                         Showing top 15 in bar chart.
+#                     </div>""", unsafe_allow_html=True)
+
+#     # ════════════════════════════════
+#     #  TAB 5 — SCATTER PLOTS
+#     # ════════════════════════════════
+#     with tabs[4]:
+#         top_pairs = corr.get("top_pairs", [])
+#         strong_pairs = [p for p in top_pairs if abs(p["pearson"]) > 0.3]
+
+#         if not strong_pairs:
+#             st.markdown(
+#                 '<div style="color:var(--muted);padding:20px;">'
+#                 'No meaningful correlations found (r > 0.3) to plot scatter charts.</div>',
+#                 unsafe_allow_html=True,
+#             )
+#         else:
+#             st.markdown(
+#                 '<div style="font-size:13px;color:var(--muted);margin-bottom:16px;">'
+#                 'Showing scatter plots for the top correlated column pairs. '
+#                 'Each point is one row in your dataset.</div>',
+#                 unsafe_allow_html=True,
+#             )
+
+#             # Pair selector
+#             pair_options = [
+#                 f"{p['col_a']}  ↔  {p['col_b']}  (r={p['pearson']:+.3f})"
+#                 for p in strong_pairs[:10]
+#             ]
+#             chosen_label = st.selectbox(
+#                 "Select column pair",
+#                 options=pair_options,
+#                 label_visibility="collapsed",
+#                 key="_scatter_pair",
+#             )
+#             chosen_idx  = pair_options.index(chosen_label)
+#             chosen_pair = strong_pairs[chosen_idx]
+#             col_a, col_b = chosen_pair["col_a"], chosen_pair["col_b"]
+
+#             # Optional colour-by categorical column
+#             colour_options = ["— none —"] + [
+#                 c for c in df_eda.columns
+#                 if c not in (col_a, col_b)
+#                 and str(df_eda[c].dtype) == "object"
+#                 and df_eda[c].nunique() <= 15
+#             ]
+#             colour_col = st.selectbox(
+#                 "Colour by (optional)",
+#                 options=colour_options,
+#                 label_visibility="collapsed",
+#                 key="_scatter_colour",
+#             )
+
+#             # Sample up to 5000 rows so the chart stays fast
+#             plot_df = df_eda[[col_a, col_b] + (
+#                 [colour_col] if colour_col != "— none —" else []
+#             )].dropna().sample(min(5000, len(df_eda)), random_state=42)
+
+#             color_arg = colour_col if colour_col != "— none —" else None
+
+#             # Build scatter figure
+#             fig_sc = go.Figure()
+#             if color_arg:
+#                 for grp_val, grp_df in plot_df.groupby(color_arg):
+#                     fig_sc.add_trace(go.Scatter(
+#                         x=grp_df[col_a], y=grp_df[col_b],
+#                         mode="markers",
+#                         name=str(grp_val),
+#                         marker=dict(size=5, opacity=0.65),
+#                     ))
+#             else:
+#                 fig_sc.add_trace(go.Scatter(
+#                     x=plot_df[col_a], y=plot_df[col_b],
+#                     mode="markers",
+#                     marker=dict(size=5, color="#2F81F7", opacity=0.55),
+#                     name="data",
+#                 ))
+
+#             # Trend line (OLS) using numpy
+#             try:
+#                 valid = plot_df[[col_a, col_b]].dropna()
+#                 m, b  = np.polyfit(valid[col_a], valid[col_b], 1)
+#                 x_min, x_max = float(valid[col_a].min()), float(valid[col_a].max())
+#                 fig_sc.add_trace(go.Scatter(
+#                     x=[x_min, x_max],
+#                     y=[m * x_min + b, m * x_max + b],
+#                     mode="lines",
+#                     name=f"Trend (y={m:.3f}x+{b:.3f})",
+#                     line=dict(color="#F85149", width=2, dash="dash"),
+#                 ))
+#             except Exception:
+#                 pass
+
+#             r_val   = chosen_pair["pearson"]
+#             r_color = "#3FB950" if abs(r_val) > 0.7 else "#D29922" if abs(r_val) > 0.4 else "#8B949E"
+
+#             fig_sc.update_layout(
+#                 **PLOTLY_LAYOUT, # type: ignore
+#                 title=f"Scatter: {col_a} vs {col_b}",
+#                 height=430,
+#                 legend=dict(orientation="h", yanchor="bottom", y=1.02),
+#             )
+#             fig_sc.update_xaxes(title_text=col_a)
+#             fig_sc.update_yaxes(title_text=col_b)
+#             st.plotly_chart(fig_sc, use_container_width=True)
+
+#             # Interpretation card
+#             direction  = chosen_pair["direction"]
+#             strength   = chosen_pair["strength"]
+#             st.markdown(f"""
+#             <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+#                         padding:14px 18px;font-size:13px;color:var(--muted);margin-top:4px;
+#                         display:flex;align-items:center;gap:16px;">
+#                 <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;
+#                             color:{r_color};">{r_val:+.3f}</div>
+#                 <div>
+#                     <div style="color:var(--fg);font-weight:600;">
+#                         {strength.capitalize()} {direction} correlation (Pearson r)
+#                     </div>
+#                     <div style="margin-top:4px;">
+#                         {"As " + col_a + " increases, " + col_b +
+#                          (" tends to increase as well." if direction == "positive"
+#                           else " tends to decrease.")}
+#                         {"This is a strong signal — consider using one as a feature to predict the other."
+#                           if strength == "strong" else
+#                          "Moderate relationship — useful feature but not dominant."
+#                           if strength == "moderate" else
+#                          "Weak relationship — likely not the most useful predictor pair."}
+#                     </div>
+#                 </div>
+#             </div>""", unsafe_allow_html=True)
+
+#             # Show all pairs as a quick reference table
+#             st.markdown('<div style="font-size:14px;font-weight:600;margin:20px 0 10px;">All Correlated Pairs (r > 0.3)</div>',
+#                         unsafe_allow_html=True)
+#             pair_rows = ""
+#             for p in strong_pairs:
+#                 v     = p["pearson"]
+#                 bar_w = int(abs(v) * 100)
+#                 bc    = "#2F81F7" if v > 0 else "#F85149"
+#                 sc    = "#3FB950" if p["strength"] == "strong" else \
+#                         "#D29922" if p["strength"] == "moderate" else "#8B949E"
+#                 pair_rows += f"""<tr>
+#                   <td class="mono" style="color:var(--fg);">{p['col_a']}</td>
+#                   <td class="mono" style="color:var(--fg);">{p['col_b']}</td>
+#                   <td><div style="background:{bc};width:{bar_w}%;height:6px;border-radius:3px;"></div></td>
+#                   <td class="mono" style="color:{bc};font-weight:600;">{v:+.4f}</td>
+#                   <td style="color:{sc};font-size:12px;">{p['strength']}</td>
+#                   <td style="color:var(--muted);font-size:12px;">{p['direction']}</td>
+#                 </tr>"""
+#             st.markdown(f"""
+#             <div class="card" style="overflow:auto;">
+#               <table class="col-table">
+#                 <thead><tr><th>Column A</th><th>Column B</th><th>Bar</th>
+#                 <th>r value</th><th>Strength</th><th>Direction</th></tr></thead>
+#                 <tbody>{pair_rows}</tbody>
+#               </table>
+#             </div>""", unsafe_allow_html=True)
+
+#     # ════════════════════════════════
+#     #  TAB 6 — TIME SERIES (optional)
+#     # ════════════════════════════════
+#     if ts_eda and len(tabs) > 5:
+#         with tabs[5]:
+#             ts_col = st.selectbox("Select date column", options=list(ts_eda.keys()),
+#                                   label_visibility="collapsed", key="_ts_col")
+#             ts_d   = ts_eda[ts_col]
+#             val_col = ts_d["value_col"]
+
+#             monthly = ts_d["monthly"]
+#             fig_ts  = go.Figure()
+#             fig_ts.add_trace(go.Scatter(
+#                 x=monthly["periods"], y=monthly["values"],
+#                 name=val_col, mode="lines+markers",
+#                 line=dict(color="#2F81F7", width=2),
+#                 marker=dict(size=5),
+#             ))
+#             fig_ts.add_trace(go.Scatter(
+#                 x=monthly["periods"], y=monthly["moving_avg"],
+#                 name="3-period MA", mode="lines",
+#                 line=dict(color="#3FB950", width=2, dash="dash"),
+#             ))
+#             fig_ts.update_layout(
+#                 **PLOTLY_LAYOUT, # type: ignore
+#                 title=f"Monthly Trend — {val_col} over {ts_col}",
+#                 height=380,
+#                 legend=dict(orientation="h", yanchor="bottom", y=1.02),
+#             )
+#             st.plotly_chart(fig_ts, use_container_width=True)
+
+#             weekly = ts_d["weekly"]
+#             if weekly["periods"]:
+#                 fig_w = go.Figure(go.Bar(
+#                     x=weekly["periods"], y=weekly["values"],
+#                     marker_color="#2F81F7", opacity=0.7,
+#                 ))
+#                 fig_w.update_layout(**PLOTLY_LAYOUT, # type: ignore
+#                                     title=f"Weekly Trend — {val_col}", height=300)
+#                 st.plotly_chart(fig_w, use_container_width=True)
+
+
+# # ══════════════════════════════════════════════════════════════════════════════
+# #  PLACEHOLDER PAGES  (Phases 6–11)
+# # ══════════════════════════════════════════════════════════════════════════════
+# elif page == "ML Models":
+#     render_ml_page()
+# else:
+#     COMING = {
+#         "ML Models":          ("🤖", "Phase 7", "Machine Learning Engine",
+#                                "AutoML — trains and compares regression, classification, and clustering models."),
+#         "Feature Importance": ("⚡", "Phase 7", "Feature Importance",
+#                                "Which columns matter most for your prediction target and why."),
+#         "AI Insights":        ("💡", "Phase 8", "Insight Generation Engine",
+#                                "The LLM reads your analysis and writes plain-English business insights."),
+#         "Reports":            ("📄", "Phase 11","Report Generation",
+#                                "Auto-generated PDF and PowerPoint ready to hand to a client or manager."),
+#         "Chat":               ("💬", "Phase 10","Chat With Dataset",
+#                                "Ask questions in plain language — SQL Agent answers from your data."),
+#     }
+#     icon, phase_tag, title, desc = COMING.get(
+#         page, ("🚧", "Coming Soon", page, "This module is under development."))
+#     st.markdown(f"""
+#     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
+#                 min-height:60vh;text-align:center;padding:60px 40px;">
+#         <div style="font-size:56px;margin-bottom:20px;">{icon}</div>
+#         <div style="font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+#                     color:var(--accent);margin-bottom:10px;">{phase_tag}</div>
+#         <div style="font-size:28px;font-weight:700;margin-bottom:12px;">{title}</div>
+#         <div style="font-size:15px;color:var(--muted);max-width:480px;line-height:1.6;">{desc}</div>
+#         <div style="margin-top:28px;padding:10px 24px;border:1px solid var(--border);
+#                     border-radius:8px;font-size:13px;color:var(--dim);">
+#             🔨 Coming in the next phase of development
+#         </div>
+#     </div>""", unsafe_allow_html=True)

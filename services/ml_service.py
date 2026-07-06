@@ -29,6 +29,10 @@ If your actual `preprocessing` / `feature_engineering` / `model_selector`
 signatures differ from the above, adjust the calls in `run_ml_pipeline` and
 `_run_clustering_fallback` accordingly — everything else (logging, progress
 callback, experiment id, artifact saving) is independent of those details.
+ML Service — orchestrates the full machine learning pipeline:
+detect target -> preprocess (incl. feature engineering) -> split ->
+train & compare models -> select best -> evaluate -> explain -> save
+everything -> return results.
 """
 
 from __future__ import annotations
@@ -36,21 +40,57 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
-
+import numpy as np
 from services import preprocessing as pp
 from services import feature_engineering as fe
 from services import model_selector as ms
 from services import explainability as ex
 from services import model_saver as saver
 
+
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 ProgressCallback = Callable[[int, str], None]
+
+
+def to_python(obj: Any) -> Any:
+    """Recursively convert numpy/pandas scalar types to native Python types
+    so the returned dict is JSON-serialisable."""
+    if isinstance(obj, dict):
+        return {
+            to_python(k): to_python(v)
+            for k, v in obj.items()
+        }
+
+    if isinstance(obj, list):
+        return [to_python(v) for v in obj]
+
+    if isinstance(obj, tuple):
+        return tuple(to_python(v) for v in obj)
+
+    if isinstance(obj, np.integer):
+        return int(obj)
+
+    if isinstance(obj, np.floating):
+        return float(obj)
+
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+
+    if isinstance(obj, pd.Series):
+        return obj.to_dict()
+
+    if isinstance(obj, pd.DataFrame):
+        return obj.to_dict(orient="records")
+
+    return obj
 
 
 def _noop_progress(percent: int, message: str) -> None:
@@ -62,7 +102,7 @@ def run_ml_pipeline(
     df: pd.DataFrame,
     user_target: str | None = None,
     progress_callback: Optional[ProgressCallback] = None,
-) -> dict:
+) -> dict[str, Any]:
     """
     Entry point called by the /train-model endpoint.
 
@@ -87,36 +127,51 @@ def run_ml_pipeline(
     logger.info("Experiment %s: training started.", experiment_id)
     progress(0, "Training started")
 
-    target = pp.detect_target_column(df, user_target)
+    # -------------------------------------------------------
+    # Preprocessing
+    # -------------------------------------------------------
+    progress(10, "Preprocessing data")
 
-    if target is None:
-        logger.info("Experiment %s: no usable target column found, falling back to clustering.", experiment_id)
-        return _run_clustering_fallback(df, experiment_id=experiment_id, progress=progress)
-
-    # --- Preprocessing (owns feature engineering: datetime, ids, encoding) ---
-    progress(10, f"Preprocessing data (target: {target})")
     processor = pp.DataPreprocessor()
-    data = processor.prepare_dataset(df, user_target=target)
 
-    problem_type = data.problem_type
-    X_train, X_test = data.X_train, data.X_test
-    y_train, y_test = data.y_train, data.y_test
-    feature_names = data.feature_names
-    target_encoder = getattr(data, "target_encoder", None)
-    fitted_preprocessor = getattr(data, "preprocessor", processor)
+    data = processor.prepare_dataset(
+        df,
+        user_target=user_target,
+    )
+
+    target = data["target"]
+    problem_type = data["problem_type"]
+
+    X_train = data["X_train"]
+    X_test = data["X_test"]
+
+    y_train = data["y_train"]
+    y_test = data["y_test"]
+
+    feature_names = list(X_train.columns)
+
+    target_encoder = None
+
+    fitted_preprocessor = data["preprocessor"]
 
     logger.info("Experiment %s: problem_type=%s, %d features.", experiment_id, problem_type, len(feature_names))
 
     # --- Train & compare candidate models ---
     progress(30, f"Training candidate models ({problem_type})")
-    comparison = ms.train_and_compare(X_train, X_test, y_train, y_test, problem_type)
+    comparison = ms.train_and_compare(
+        X_train, X_test, y_train, y_test, problem_type,
+        preprocessor=fitted_preprocessor,
+    )
     best_name = comparison["best_model_name"]
     best_model = comparison["best_model"]
-    best_metrics = comparison["results"][best_name]
+    best_metrics = next(
+        r for r in comparison["results"]
+        if r["name"] == best_name
+    )
     progress(60, f"Best model so far: {best_name}")
 
-    leaderboard = _build_leaderboard(comparison["results"])
-    best_params = best_metrics.get("best_params")
+    leaderboard = comparison["leaderboard"]
+    best_params = best_metrics.get("params")
     cross_validation = {
         "cv_mean": best_metrics.get("cv_mean"),
         "cv_std": best_metrics.get("cv_std"),
@@ -137,7 +192,7 @@ def run_ml_pipeline(
         model=best_model,
         preprocessor=fitted_preprocessor,
         feature_names=list(feature_names),
-        metrics=best_metrics,
+        metrics=best_metrics["metrics"],
         metadata={
             "experiment_id": experiment_id,
             "problem_type": problem_type,
@@ -152,32 +207,41 @@ def run_ml_pipeline(
     logger.info("Experiment %s: finished in %.2fs. Best model: %s", experiment_id, elapsed, best_name)
     progress(100, f"Finished — best model: {best_name} ({elapsed}s)")
 
-    return {
+    return to_python({
         "experiment_id": experiment_id,
         "target_column": target,
         "problem_type": problem_type,
         "best_model": best_name,
-        "metrics": best_metrics,
+        "metrics": best_metrics["metrics"],
         "model_comparison": leaderboard,
         "best_parameters": best_params,
         "cross_validation": cross_validation,
         "feature_importance": feature_importance,
         "artifact_paths": {k: str(v) for k, v in artifact_paths.items()},
         "training_time_seconds": elapsed,
-    }
+        "best_score": (
+            best_metrics["metrics"].get("accuracy")
+            or best_metrics["metrics"].get("r2")
+            or best_metrics["metrics"].get("f1")
+        ),
+    })
 
 
 def _run_clustering_fallback(
     df: pd.DataFrame,
     experiment_id: Optional[str] = None,
     progress: ProgressCallback = _noop_progress,
-) -> dict:
+) -> dict[str, Any]:
     """No usable target column found — fall back to KMeans clustering."""
     experiment_id = experiment_id or str(uuid.uuid4())
     start_time = time.time()
 
     progress(20, "No target found — preparing features for clustering")
-    X = fe.engineer_features(df.assign(_dummy_target=0), "_dummy_target")
+    feature_result = fe.engineer_features(
+        df.assign(_dummy_target=0),
+        "_dummy_target",
+    )
+    X = feature_result["data"]
 
     if X.empty or X.shape[1] == 0:
         raise ValueError("No usable feature columns remain for clustering after preprocessing")
@@ -207,7 +271,7 @@ def _run_clustering_fallback(
     logger.info("Experiment %s: clustering finished in %.2fs.", experiment_id, elapsed)
     progress(100, f"Finished — KMeans with {clustering.n_clusters} clusters ({elapsed}s)")
 
-    return {
+    return to_python({
         "experiment_id": experiment_id,
         "target_column": None,
         "problem_type": "clustering",
@@ -217,7 +281,7 @@ def _run_clustering_fallback(
         "feature_importance": {},
         "artifact_paths": {k: str(v) for k, v in artifact_paths.items()},
         "training_time_seconds": elapsed,
-    }
+    })
 
 
 def _build_leaderboard(results: dict) -> list[dict]:

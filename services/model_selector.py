@@ -13,7 +13,8 @@ already-encoded input or for models that don't need scaling (tree ensembles).
 import logging
 import time
 from typing import Callable, Optional
-
+from sklearn.base import BaseEstimator
+from sklearn.pipeline import Pipeline
 import pandas as pd
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import cross_val_score, RandomizedSearchCV
@@ -35,7 +36,8 @@ from services import evaluation as ev
 logger = logging.getLogger(__name__)
 
 try:
-    from utils.config import RANDOM_STATE
+    from utils.config import Config
+    RANDOM_STATE = Config.RANDOM_STATE
 except ImportError:
     RANDOM_STATE = 42
 
